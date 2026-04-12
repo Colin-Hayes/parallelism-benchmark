@@ -157,14 +157,16 @@ def _benchmark_pipe(
     for _ in range(WARMUP_STEPS):
         _step()
 
-    torch.cuda.synchronize(local_rank)
     for i in range(num_stages):
+        torch.cuda.synchronize(i)
         torch.cuda.reset_peak_memory_stats(i)
 
     t0 = time.perf_counter()
     for _ in range(BENCH_STEPS):
         _step()
-    torch.cuda.synchronize(local_rank)
+    
+    for i in range(num_stages):
+        torch.cuda.synchronize(i)
     elapsed = time.perf_counter() - t0
 
     throughput  = round((BENCH_STEPS * batch_size) / elapsed, 2)
