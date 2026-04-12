@@ -1,0 +1,6 @@
+*.json
+*.out
+*.err
+__pycache__/
+*.pyc
+benchmark_env/
