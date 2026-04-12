@@ -1,4 +1,4 @@
-To run the models, it generally took ~5 minutes:
+I used the VS Code SSH to connect to Delta and to run the models, it generally took ~5 minutes:
 
 ```bash
 # 1. Clone the repo in u/user/~
