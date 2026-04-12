@@ -96,7 +96,7 @@ def _build_sequential(model_cfg: dict):
     layers.append(_FinalNormAndHead(base.transformer.ln_f, base.lm_head))
 
     del base
-    return nn.Sequential(*layers), config.n_layer
+    return nn.Sequential(*layers).half(), config.n_layer
 
 
 def _compute_balance(num_layers: int, num_stages: int) -> list:
@@ -145,11 +145,12 @@ def _benchmark_pipe(
         return torch.randint(0, 50257, (batch_size, seq_len), device=last_device)
 
     def _step():
-        logits = pipe_model(_make_input())
-        loss   = nn.functional.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            _make_labels().view(-1),
-        )
+        with torch.autocast("cuda", dtype=torch.float16):
+            logits = pipe_model(_make_input())
+            loss   = nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                _make_labels().view(-1),
+            )
         loss.backward()
         opt.step()
         opt.zero_grad()
@@ -167,6 +168,7 @@ def _benchmark_pipe(
     
     for i in range(num_stages):
         torch.cuda.synchronize(i)
+
     elapsed = time.perf_counter() - t0
 
     throughput  = round((BENCH_STEPS * batch_size) / elapsed, 2)
