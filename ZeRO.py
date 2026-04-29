@@ -22,8 +22,8 @@ import torch.distributed as dist
 import deepspeed
 from transformers import GPT2Config, GPT2LMHeadModel
 
-WARMUP_STEPS = 2
-BENCH_STEPS  = 10
+WARMUP_STEPS = 5
+BENCH_STEPS  = 20
 
 
 # ── DeepSpeed config builders ─────────────────────────────────────────────────
@@ -55,50 +55,13 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         "steps_per_print": 10000,
     }
 
-    #if stage == 3:
-        # Prefetch parameters during forward/backward to overlap communication
-        # with compute — this is the standard fair-comparison setting.
-
-
-        # cfg["zero_optimization"].update({
-
-        # # changed this -> 
-        
-        # #     "stage3_prefetch_bucket_size":        5e7,
-        # #     "stage3_param_persistence_threshold": 1e6,
-        # #     "stage3_max_live_parameters":         1e9,
-        # #     "stage3_max_reuse_distance":          1e9,
-        # #     "overlap_comm":                       False,
-
-        # # to this -> 
-        #     "stage3_prefetch_bucket_size": 5e6,
-        #     "stage3_param_persistence_threshold": 1e4,
-        #     "stage3_max_live_parameters": 5e7,
-        #     "stage3_max_reuse_distance": 5e7,
-        #     "contiguous_gradients": True,
-        #     "reduce_scatter": True,
-        #     "overlap_comm": False,
-
-        #     # "offload_optimizer": {
-        #     #     "device": "cpu",
-        #     #     "pin_memory": True,
-        #     # },
-
-        #     # "offload_param": {
-        #     #     "device": "cpu",
-        #     #     "pin_memory": True,
-        #     # },
-
     if stage == 3:
+        # overlap_comm=False keeps communication and compute separate for clean measurement.
+        # All other stage3_* tuning knobs are post-paper additions and are intentionally omitted
+        # to keep this faithful to the original ZeRO paper (Rajbhandari et al., 2020).
         cfg["zero_optimization"].update({
-            "stage3_prefetch_bucket_size": 5e6,
-            "stage3_param_persistence_threshold": 1e4,
-            "stage3_max_live_parameters": 5e7,
-            "stage3_max_reuse_distance": 5e7,
-            "contiguous_gradients": True,
-            "reduce_scatter": True,
             "overlap_comm": False,
-    })
+        })
 
     return cfg
 
@@ -195,25 +158,6 @@ def run_zero(
     strategy = f"zero{stage}"
 
     try:
-        
-
-        # config = GPT2Config(
-        #     vocab_size=50257,
-        #     n_positions=seq_len,
-        #     n_ctx=seq_len,
-        #     use_cache=False,
-        #     **model_cfg,
-        # )
-
-        # model = GPT2LMHeadModel(config)
-        # model.gradient_checkpointing_enable()
-        
-        # engine, _, _, _ = deepspeed.initialize(
-        #     model=model,
-        #     model_parameters=model.parameters(),
-        #     config=_ds_config(stage, batch_size),
-        # )
-
         ds_cfg = _ds_config(stage, batch_size)
 
         config = GPT2Config(
@@ -260,6 +204,14 @@ def run_zero(
         }
 
     except torch.cuda.OutOfMemoryError as e:
+        try:
+            del engine
+        except NameError:
+            pass
+        try:
+            del model
+        except NameError:
+            pass
         torch.cuda.empty_cache()
         gc.collect()
         dist.barrier()
@@ -272,6 +224,14 @@ def run_zero(
         }
 
     except Exception as e:
+        try:
+            del engine
+        except NameError:
+            pass
+        try:
+            del model
+        except NameError:
+            pass
         torch.cuda.empty_cache()
         gc.collect()
         return {
