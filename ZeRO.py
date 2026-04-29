@@ -105,7 +105,9 @@ def _benchmark_engine(
     torch.cuda.synchronize(local_rank)
     torch.cuda.reset_peak_memory_stats(local_rank)
 
-    # Timed section
+    # Barrier ensures all ranks start timing together, so elapsed is not
+    # inflated by one rank arriving late from previous work.
+    dist.barrier()
     t0 = time.perf_counter()
     for _ in range(BENCH_STEPS):
         loss = engine(**_make_batch()).loss
@@ -114,7 +116,9 @@ def _benchmark_engine(
     torch.cuda.synchronize(local_rank)
     elapsed = time.perf_counter() - t0
 
-    throughput  = round((BENCH_STEPS * batch_size) / elapsed, 2)
+    # Total system throughput: samples processed by the entire cluster per second.
+    # With DDP each GPU processes batch_size independent samples simultaneously.
+    throughput = round((BENCH_STEPS * batch_size * dist.get_world_size()) / elapsed, 2)
     
     peak_this_rank = torch.cuda.max_memory_allocated(local_rank) / 1e9
     peak_tensor = torch.tensor(peak_this_rank, device=f"cuda:{local_rank}")
@@ -149,9 +153,10 @@ def run_zero(
     -------
     dict with keys:
         strategy                     "zero0" or "zero3"
-        throughput_samples_per_sec   float or None
-        peak_gpu_mem_gb_rank0        float or None  (high-water mark on rank 0,
-                                                     includes all-gather spikes)
+        throughput_samples_per_sec   float or None  (total cluster samples/sec,
+                                                     = batch_size * world_size * steps / elapsed)
+        peak_gpu_mem_gb              float or None  (max across all ranks;
+                                                     includes all-gather spikes for ZeRO-3)
         status                       "ok" | "OOM" | "error"
         error                        None or exception string
     """
@@ -198,7 +203,7 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": throughput,
-            "peak_gpu_mem_gb_rank0":      peak_mem,
+            "peak_gpu_mem_gb":      peak_mem,
             "status":                     "ok",
             "error":                      None,
         }
@@ -218,7 +223,7 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
-            "peak_gpu_mem_gb_rank0":      None,
+            "peak_gpu_mem_gb":      None,
             "status":                     "OOM",
             "error":                      str(e),
         }
@@ -237,7 +242,7 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
-            "peak_gpu_mem_gb_rank0":      None,
+            "peak_gpu_mem_gb":      None,
             "status":                     "error",
             "error":                      str(e),
         }

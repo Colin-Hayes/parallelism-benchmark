@@ -199,16 +199,18 @@ def _benchmark_megatron(
     torch.cuda.synchronize(local_rank)
     torch.cuda.reset_peak_memory_stats(local_rank)
 
+    # Barrier ensures all ranks start timing together.
+    dist.barrier()
     t0 = time.perf_counter()
     for _ in range(BENCH_STEPS):
         _step()
     torch.cuda.synchronize(local_rank)
     elapsed = time.perf_counter() - t0
 
-    # Report per-GPU-equivalent throughput: same units as ZeRO benchmark
+    # Total system throughput: all GPUs cooperate on batch_size * num_microbatches
+    # samples per step — directly comparable to ZeRO's batch_size * world_size.
     global_samples_per_step = batch_size * num_microbatches
-    world_size              = dist.get_world_size()
-    throughput = round((BENCH_STEPS * global_samples_per_step) / elapsed / world_size, 2)
+    throughput = round((BENCH_STEPS * global_samples_per_step) / elapsed, 2)
 
     peak_this_rank = torch.cuda.max_memory_allocated(local_rank) / 1e9
     peak_tensor    = torch.tensor(peak_this_rank, device=f"cuda:{local_rank}")
