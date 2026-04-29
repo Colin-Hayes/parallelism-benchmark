@@ -10,13 +10,13 @@ import torch.distributed as dist
 from ZeRO import run_zero
 
 MODEL_CONFIGS = {
-    # "125M": dict(n_layer=12, n_head=12,  n_embd=768),
-    # "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
-    # "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
+    "125M": dict(n_layer=12, n_head=12,  n_embd=768),
+    "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
+    "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
 }
-BATCH_SIZE = 1 ## changed from 4
-SEQ_LEN    = 256 ## changed from 512
+BATCH_SIZE = 4
+SEQ_LEN    = 512
 
 def save_results(path, records):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -49,7 +49,7 @@ def main():
     all_results = []
 
     for size_name, model_cfg in configs.items():
-        for stage in [3]:
+        for stage in [0, 3]:
             dist.barrier()
             result = run_zero(stage, model_cfg, batch_size, seq_len, local_rank)
             result.update({
