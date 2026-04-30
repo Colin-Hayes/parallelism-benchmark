@@ -95,7 +95,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         post_process=mpu.is_pipeline_last_stage(),
     )
 
-    return model.cuda()
+    return model.cuda().half()
 
 
 # ── Data iterator ─────────────────────────────────────────────────────────────

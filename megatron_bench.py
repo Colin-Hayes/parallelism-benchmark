@@ -64,7 +64,7 @@ def main():
     )
     world_size = dist.get_world_size()
 
-    configs          = {"125M_tiny": dict(n_layer=2, n_head=2, n_embd=64)} if args.dry_run else MODEL_CONFIGS
+    configs          = {"125M_tiny": dict(n_layer=2, n_head=4, n_embd=64)} if args.dry_run else MODEL_CONFIGS
     batch_size       = 1 if args.dry_run else BATCH_SIZE
     seq_len          = 16 if args.dry_run else SEQ_LEN
     num_microbatches = 1 if args.dry_run else NUM_MICROBATCHES
