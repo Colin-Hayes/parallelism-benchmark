@@ -276,6 +276,9 @@ def run_megatron(
             pipeline_model_parallel_size=pp_size,
         )
 
+        from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
+        model_parallel_cuda_manual_seed(42)
+
         model = _build_model(model_cfg, seq_len)
 
         throughput, peak_mem = _benchmark_megatron(
