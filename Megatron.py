@@ -26,6 +26,7 @@ Called by megatron_bench.py — do not run directly.
 """
 
 import gc
+import math
 import time
 
 import torch
@@ -82,10 +83,13 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         gradient_accumulation_fusion=False,
     )
 
+    tp = mpu.get_tensor_model_parallel_world_size()
+    vocab_size = math.ceil(50257 / tp) * tp
+
     model = GPTModel(
         config=config,
         transformer_layer_spec=_get_layer_spec(),
-        vocab_size=50257,
+        vocab_size=vocab_size,
         max_sequence_length=seq_len,
         pre_process=mpu.is_pipeline_first_stage(),
         post_process=mpu.is_pipeline_last_stage(),
