@@ -17,9 +17,6 @@
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
 
-# Install megatron-core if not already present
-python -c "import megatron.core" 2>/dev/null || pip install megatron-core
-
 RESULTS=/work/hdd/bdes/$USER/benchmark/results
 mkdir -p $RESULTS /work/hdd/bdes/$USER/benchmark/logs
 
