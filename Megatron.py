@@ -155,7 +155,8 @@ def _make_forward_step(seq_len: int):
         )
 
         def loss_func(output_tensor):
-            return output_tensor, {"loss": output_tensor.detach()}
+            loss = output_tensor.mean()
+            return loss, {"loss": loss.detach()}
 
         return output, loss_func
 
