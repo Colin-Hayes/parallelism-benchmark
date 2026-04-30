@@ -95,7 +95,12 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         post_process=mpu.is_pipeline_last_stage(),
     )
 
-    return model.cuda().half()
+    model = model.cuda()
+    # Cast non-norm params to fp16; keep LayerNorm in fp32 for numerical stability.
+    for name, param in model.named_parameters():
+        if not any(nd in name for nd in ("norm", "ln")):
+            param.data = param.data.half()
+    return model
 
 
 # ── Data iterator ─────────────────────────────────────────────────────────────
@@ -110,16 +115,17 @@ class _DataIterator:
     Advancing in lockstep across all ranks keeps the iterator consistent.
     """
 
-    def __init__(self, batch_size: int, seq_len: int, local_rank: int):
+    def __init__(self, batch_size: int, seq_len: int, local_rank: int, vocab_size: int):
         self.batch_size = batch_size
         self.seq_len    = seq_len
         self.device     = f"cuda:{local_rank}"
+        self.vocab_size = vocab_size
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        ids = torch.randint(0, 50257, (self.batch_size, self.seq_len), device=self.device)
+        ids = torch.randint(0, self.vocab_size, (self.batch_size, self.seq_len), device=self.device)
         return {"input_ids": ids, "labels": ids}
 
 
@@ -171,6 +177,7 @@ def _benchmark_megatron(
     batch_size:      int,
     seq_len:         int,
     num_microbatches: int,
+    vocab_size:      int,
 ) -> tuple[float, float]:
     """
     WARMUP_STEPS warmup steps then BENCH_STEPS timed steps using the 1F1B schedule.
@@ -183,7 +190,7 @@ def _benchmark_megatron(
     forward_backward_func = get_forward_backward_func()
     forward_step          = _make_forward_step(seq_len)
     opt                   = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
-    data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank))
+    data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
     def _step():
         opt.zero_grad(set_to_none=True)
@@ -280,10 +287,11 @@ def run_megatron(
         from megatron.core.tensor_parallel.random import model_parallel_cuda_manual_seed
         model_parallel_cuda_manual_seed(42)
 
-        model = _build_model(model_cfg, seq_len)
+        model      = _build_model(model_cfg, seq_len)
+        vocab_size = math.ceil(50257 / tp_size) * tp_size
 
         throughput, peak_mem = _benchmark_megatron(
-            model, local_rank, batch_size, seq_len, num_microbatches
+            model, local_rank, batch_size, seq_len, num_microbatches, vocab_size
         )
 
         del model
@@ -332,6 +340,7 @@ def run_megatron(
             mpu.destroy_model_parallel()
         except Exception:
             pass
+        dist.barrier()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,

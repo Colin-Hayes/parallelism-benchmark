@@ -17,6 +17,8 @@
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
 
+export CUDA_DEVICE_MAX_CONNECTIONS=1
+
 RESULTS=/work/hdd/bdes/$USER/benchmark/results
 mkdir -p $RESULTS /work/hdd/bdes/$USER/benchmark/logs
 
