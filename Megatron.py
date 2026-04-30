@@ -95,12 +95,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         post_process=mpu.is_pipeline_last_stage(),
     )
 
-    model = model.cuda()
-    # Cast non-norm params to fp16; keep LayerNorm in fp32 for numerical stability.
-    for name, param in model.named_parameters():
-        if not any(nd in name for nd in ("norm", "ln")):
-            param.data = param.data.half()
-    return model
+    return model.cuda().half()
 
 
 # ── Data iterator ─────────────────────────────────────────────────────────────
@@ -131,7 +126,7 @@ class _DataIterator:
 
 # ── Forward step for the pipeline schedule ────────────────────────────────────
 
-def _make_forward_step(seq_len: int):
+def _make_forward_step(seq_len: int, debug: bool = False):
     """
     Return a forward_step function compatible with megatron-core's pipeline schedule.
 
@@ -141,6 +136,8 @@ def _make_forward_step(seq_len: int):
     On non-last stages:  output_tensor = hidden states sent to next stage
     On the last stage:   output_tensor = loss scalar; loss_func wraps it
     """
+    _logged = [False]  # log dtypes/shapes once per run to avoid log spam
+
     def forward_step(data_iterator, model):
         data         = next(data_iterator)
         input_ids    = data["input_ids"]
@@ -151,6 +148,19 @@ def _make_forward_step(seq_len: int):
             .expand(input_ids.shape[0], -1)
         )
 
+        if debug and not _logged[0]:
+            rank = dist.get_rank()
+            print(
+                f"[rank{rank}] input_ids: {input_ids.shape} {input_ids.dtype} | "
+                f"labels: {labels.shape if labels is not None else None} | "
+                f"first_stage={mpu.is_pipeline_first_stage()} "
+                f"last_stage={mpu.is_pipeline_last_stage()}",
+                flush=True,
+            )
+            for name, p in model.named_parameters():
+                print(f"[rank{rank}]   param {name}: {p.dtype}", flush=True)
+            _logged[0] = True
+
         # On non-first stages, the model ignores input_ids and reads hidden
         # states that the pipeline schedule placed via model.set_input_tensor().
         output = model(
@@ -159,6 +169,14 @@ def _make_forward_step(seq_len: int):
             attention_mask=None,   # megatron uses causal mask internally
             labels=labels,
         )
+
+        if debug and not _logged[0]:
+            rank = dist.get_rank()
+            print(
+                f"[rank{rank}] output: {output.shape if hasattr(output, 'shape') else type(output)} "
+                f"{output.dtype if hasattr(output, 'dtype') else ''}",
+                flush=True,
+            )
 
         def loss_func(output_tensor):
             loss = output_tensor.mean()
@@ -178,6 +196,7 @@ def _benchmark_megatron(
     seq_len:         int,
     num_microbatches: int,
     vocab_size:      int,
+    debug:           bool = False,
 ) -> tuple[float, float]:
     """
     WARMUP_STEPS warmup steps then BENCH_STEPS timed steps using the 1F1B schedule.
@@ -188,7 +207,7 @@ def _benchmark_megatron(
     peak_mem is the max across all ranks (captures pipeline stage imbalance).
     """
     forward_backward_func = get_forward_backward_func()
-    forward_step          = _make_forward_step(seq_len)
+    forward_step          = _make_forward_step(seq_len, debug=debug)
     opt                   = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
@@ -242,6 +261,7 @@ def run_megatron(
     seq_len:          int,
     local_rank:       int,
     num_microbatches: int = 4,
+    debug:            bool = False,
 ) -> dict:
     """
     Initialise megatron-core TP+PP process groups, build a GPT shard on this
@@ -291,7 +311,7 @@ def run_megatron(
         vocab_size = math.ceil(50257 / tp_size) * tp_size
 
         throughput, peak_mem = _benchmark_megatron(
-            model, local_rank, batch_size, seq_len, num_microbatches, vocab_size
+            model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, debug=debug
         )
 
         del model

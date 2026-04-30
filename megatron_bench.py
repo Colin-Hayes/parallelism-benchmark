@@ -91,6 +91,7 @@ def main():
                 seq_len=seq_len,
                 local_rank=local_rank,
                 num_microbatches=num_microbatches,
+                debug=args.dry_run,
             )
             result.update({
                 "model_size": size_name,
