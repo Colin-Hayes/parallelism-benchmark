@@ -13,6 +13,7 @@ Throughput is reported as per-GPU-equivalent samples/sec to match zero_bench.py.
 import argparse
 import json
 import os
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -61,6 +62,7 @@ def main():
     dist.init_process_group(
         backend="nccl",
         device_id=torch.device(f"cuda:{local_rank}"),
+        timeout=timedelta(seconds=60),
     )
     world_size = dist.get_world_size()
 
