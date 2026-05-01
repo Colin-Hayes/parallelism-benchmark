@@ -4,9 +4,9 @@
 #SBATCH --partition=gpuA100x4
 #SBATCH --account=bdes-delta-gpu
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
@@ -26,8 +26,8 @@ mkdir -p $RESULTS /u/$USER/benchmark/logs
 nvidia-smi --query-gpu=index,name,uuid,memory.total --format=csv \
     | tee $RESULTS/gpu_info_${SLURM_JOB_ID}.txt
 
-python -m torch.distributed.run \
-    --nproc_per_node=4 \
-    --master_port=29511 \
-    /u/$USER/benchmark/megatron_bench.py \
-    --output $RESULTS/results_megatron_${SLURM_JOB_ID}.json
+# megatron_bench.py is a plain Python orchestrator — it spawns one torchrun
+# subprocess per config so NCCL crashes are isolated and don't kill the job.
+python /u/$USER/benchmark/megatron_bench.py \
+    --output $RESULTS/results_megatron_${SLURM_JOB_ID}.json \
+    --nproc_per_node 4

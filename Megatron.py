@@ -28,7 +28,6 @@ Called by megatron_bench.py — do not run directly.
 import gc
 import math
 import time
-from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -320,9 +319,11 @@ def run_megatron(
         )
 
         del model
-        torch.cuda.empty_cache()
-        gc.collect()
+        torch.cuda.synchronize(local_rank)
         mpu.destroy_model_parallel()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
 
         return {
             "strategy":                   strategy,
@@ -338,16 +339,13 @@ def run_megatron(
     except torch.cuda.OutOfMemoryError as e:
         if model is not None:
             del model
-        torch.cuda.empty_cache()
-        gc.collect()
         try:
             mpu.destroy_model_parallel()
         except Exception:
             pass
-        try:
-            dist.monitored_barrier(timeout=timedelta(seconds=10), wait_all_ranks=True)
-        except Exception:
-            pass
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
@@ -362,16 +360,13 @@ def run_megatron(
     except Exception as e:
         if model is not None:
             del model
-        torch.cuda.empty_cache()
-        gc.collect()
         try:
             mpu.destroy_model_parallel()
         except Exception:
             pass
-        try:
-            dist.monitored_barrier(timeout=timedelta(seconds=10), wait_all_ranks=True)
-        except Exception:
-            pass
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
