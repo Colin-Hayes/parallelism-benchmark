@@ -17,6 +17,10 @@
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
 
+# expandable_segments lets the allocator grow/shrink segments dynamically,
+# which avoids the fragmentation-induced OOMs reported in the ZeRO-3 6.7B run.
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 RESULTS=/u/$USER/benchmark/results
 mkdir -p $RESULTS /u/$USER/benchmark/logs
 

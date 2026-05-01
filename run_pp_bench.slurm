@@ -17,6 +17,8 @@
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 RESULTS=/u/$USER/benchmark/results
 mkdir -p $RESULTS /u/$USER/benchmark/logs
 

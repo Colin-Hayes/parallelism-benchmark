@@ -56,11 +56,16 @@ def _ds_config(stage: int, batch_size: int) -> dict:
     }
 
     if stage == 3:
-        # overlap_comm=False keeps communication and compute separate for clean measurement.
-        # All other stage3_* tuning knobs are post-paper additions and are intentionally omitted
-        # to keep this faithful to the original ZeRO paper (Rajbhandari et al., 2020).
         cfg["zero_optimization"].update({
+            # overlap_comm=False keeps communication and compute separate for clean measurement.
             "overlap_comm": False,
+            # Largest single weight for 6.7B is 67.1M params (FFN fc1/fc2: 4096×16384).
+            # 1e8 fits one full weight matrix without splitting while limiting simultaneous
+            # all-gather buffers to ~200 MB fp16, vs ~1.6 GB with the 1e9 default.
+            "stage3_max_live_parameters":  1e8,
+            # Release gathered params once >100M params have been consumed past the use
+            # site — sub-layer granularity, avoids keeping full layers pinned.
+            "stage3_max_reuse_distance":   1e8,
         })
 
     return cfg
@@ -197,7 +202,9 @@ def run_zero(
 
         # Explicit teardown so the next strategy starts with a clean slate
         del engine, model
+        torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         gc.collect()
 
         return {
@@ -218,8 +225,8 @@ def run_zero(
         except NameError:
             pass
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         gc.collect()
-        dist.barrier()
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
@@ -238,6 +245,7 @@ def run_zero(
         except NameError:
             pass
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
         gc.collect()
         return {
             "strategy":                   strategy,
