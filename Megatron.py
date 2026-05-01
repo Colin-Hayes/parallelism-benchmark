@@ -28,6 +28,7 @@ Called by megatron_bench.py — do not run directly.
 import gc
 import math
 import time
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -83,8 +84,8 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         gradient_accumulation_fusion=False,
         # Recompute activations to reduce peak memory
         recompute_granularity="full",
-        recompute_method="block",
-        recompute_num_layers=model_cfg["n_layer"],
+        recompute_method="uniform",
+        recompute_num_layers=model_cfg["n_layer"] // mpu.get_pipeline_model_parallel_world_size(),
     )
 
     tp = mpu.get_tensor_model_parallel_world_size()
@@ -343,7 +344,10 @@ def run_megatron(
             mpu.destroy_model_parallel()
         except Exception:
             pass
-        dist.barrier()
+        try:
+            dist.monitored_barrier(timeout=timedelta(seconds=10), wait_all_ranks=True)
+        except Exception:
+            pass
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
@@ -364,7 +368,10 @@ def run_megatron(
             mpu.destroy_model_parallel()
         except Exception:
             pass
-        dist.barrier()
+        try:
+            dist.monitored_barrier(timeout=timedelta(seconds=10), wait_all_ranks=True)
+        except Exception:
+            pass
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
