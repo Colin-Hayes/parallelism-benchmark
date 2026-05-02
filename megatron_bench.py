@@ -17,6 +17,7 @@ Throughput is reported as per-GPU-equivalent samples/sec to match zero_bench.py.
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,6 @@ PARALLEL_CONFIGS = [
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUN_SCRIPT = os.path.join(SCRIPT_DIR, "megatron_run_config.py")
-BASE_PORT  = 29511
 
 
 def save_results(path, records):
@@ -127,12 +127,10 @@ def main():
     num_microbatches = 1 if args.dry_run else NUM_MICROBATCHES
 
     all_results = []
-    run_index   = 0
 
     for size_name, model_cfg in configs.items():
         for tp_size, pp_size in valid_parallel:
-            port = BASE_PORT + run_index
-            run_index += 1
+            port = random.randint(20000, 40000)
             print(f"\n=== {size_name} TP={tp_size} PP={pp_size} (port {port}) ===",
                   flush=True)
             result = run_one_config(

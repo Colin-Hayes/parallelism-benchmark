@@ -39,6 +39,7 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
         timeout=timedelta(seconds=120),
     )
+    dist.barrier()   # ensure all ranks finish init before any rank proceeds
     world_size = dist.get_world_size()
 
     model_cfg = dict(n_layer=args.n_layer, n_head=args.n_head, n_embd=args.n_embd)

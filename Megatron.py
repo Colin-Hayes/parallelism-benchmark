@@ -143,19 +143,28 @@ def _make_forward_step(seq_len: int, debug: bool = False):
     _logged = [False]  # log dtypes/shapes once per run to avoid log spam
 
     def forward_step(data_iterator, model):
-        data         = next(data_iterator)
-        input_ids    = data["input_ids"]
-        labels       = data["labels"] if mpu.is_pipeline_last_stage() else None
-        position_ids = (
-            torch.arange(seq_len, device=input_ids.device)
-            .unsqueeze(0)
-            .expand(input_ids.shape[0], -1)
-        )
+        data      = next(data_iterator)
+        input_ids = data["input_ids"]
+        labels    = data["labels"] if mpu.is_pipeline_last_stage() else None
+
+        # Non-first stages receive hidden states via set_input_tensor() called
+        # internally by the pipeline schedule. Passing input_ids to GPTModel
+        # when pre_process=False is harmless in most versions, but some
+        # megatron-core builds raise on non-None input_ids mid-pipeline.
+        if mpu.is_pipeline_first_stage():
+            position_ids = (
+                torch.arange(seq_len, device=input_ids.device)
+                .unsqueeze(0)
+                .expand(input_ids.shape[0], -1)
+            )
+        else:
+            input_ids    = None
+            position_ids = None
 
         if debug and not _logged[0]:
             rank = dist.get_rank()
             print(
-                f"[rank{rank}] input_ids: {input_ids.shape} {input_ids.dtype} | "
+                f"[rank{rank}] input_ids: {input_ids} | "
                 f"labels: {labels.shape if labels is not None else None} | "
                 f"first_stage={mpu.is_pipeline_first_stage()} "
                 f"last_stage={mpu.is_pipeline_last_stage()}",
@@ -165,8 +174,6 @@ def _make_forward_step(seq_len: int, debug: bool = False):
                 print(f"[rank{rank}]   param {name}: {p.dtype}", flush=True)
             _logged[0] = True
 
-        # On non-first stages, the model ignores input_ids and reads hidden
-        # states that the pipeline schedule placed via model.set_input_tensor().
         output = model(
             input_ids=input_ids,
             position_ids=position_ids,
