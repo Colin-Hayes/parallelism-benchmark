@@ -80,8 +80,14 @@ def _ds_config(stage: int, batch_size: int) -> dict:
             # 5e7 (50M params = 100 MB bf16) caps the all-gather prefetch cache.
             # bf16 saves ~4 bytes/param vs fp16 (no fp32 master weights) giving
             # more headroom, but 5e7 remains conservative and confirmed-safe.
-            "stage3_max_live_parameters": 5e7,
-            "stage3_max_reuse_distance":  5e7,
+            "stage3_max_live_parameters":       5e7,
+            "stage3_max_reuse_distance":        5e7,
+            "stage3_prefetch_bucket_size":      5e6,
+            # Default sub_group_size=1e9 causes a ~10 GB spike during the optimizer
+            # step: DeepSpeed materialises the fp32 shard + bf16 cast-back for 1B
+            # params at once. 1e7 reduces that spike to ~120 MB at the cost of more
+            # optimizer micro-steps.
+            "sub_group_size":                   1e7,
         })
 
     return cfg
