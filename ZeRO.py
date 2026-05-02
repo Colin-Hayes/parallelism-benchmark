@@ -52,6 +52,15 @@ def _ds_config(stage: int, batch_size: int) -> dict:
             },
         },
         "zero_optimization": { "stage": stage },
+        # DeepSpeed activation checkpointing replaces torch.utils.checkpoint.checkpoint
+        # with a version that packs saved activations into a contiguous buffer
+        # (contiguous_memory_optimization) to reduce fragmentation. partition_activations
+        # further splits those buffers across data-parallel ranks so each GPU only
+        # holds 1/world_size of the checkpointed activations.
+        "activation_checkpointing": {
+            "partition_activations":          True,
+            "contiguous_memory_optimization": True,
+        },
         "steps_per_print": 10000,
     }
 
@@ -59,13 +68,11 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         cfg["zero_optimization"].update({
             # overlap_comm=False keeps communication and compute separate for clean measurement.
             "overlap_comm": False,
-            # Largest single weight for 6.7B is 67.1M params (FFN fc1/fc2: 4096×16384).
-            # 1e8 fits one full weight matrix without splitting while limiting simultaneous
-            # all-gather buffers to ~200 MB fp16, vs ~1.6 GB with the 1e9 default.
-            "stage3_max_live_parameters":  1e8,
-            # Release gathered params once >100M params have been consumed past the use
-            # site — sub-layer granularity, avoids keeping full layers pinned.
-            "stage3_max_reuse_distance":   1e8,
+            # 5e7 (50M params = 100 MB fp16) is the confirmed-working value for the 6.7B
+            # model, which has only 13.4 GB headroom after sharded weights+optimizer states.
+            # Keeps at most one partial weight matrix in the all-gather cache at a time.
+            "stage3_max_live_parameters": 5e7,
+            "stage3_max_reuse_distance":  5e7,
         })
 
     return cfg
