@@ -72,8 +72,11 @@ def _ds_config(stage: int, batch_size: int) -> dict:
 
     if stage == 3:
         cfg["zero_optimization"].update({
-            # overlap_comm=False keeps communication and compute separate for clean measurement.
-            "overlap_comm": False,
+            # overlap_comm=True prefetches the next parameter shard while computing
+            # on the current one, hiding all-gather latency behind useful compute.
+            # Disabling it is only appropriate for debugging correctness issues.
+            "overlap_comm": True,
+            "contiguous_gradients": True,
             # 5e7 (50M params = 100 MB bf16) caps the all-gather prefetch cache.
             # bf16 saves ~4 bytes/param vs fp16 (no fp32 master weights) giving
             # more headroom, but 5e7 remains conservative and confirmed-safe.
