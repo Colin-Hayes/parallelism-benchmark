@@ -41,7 +41,10 @@ def _ds_config(stage: int, batch_size: int) -> dict:
     cfg = {
         "train_batch_size": batch_size * dist.get_world_size(),
         "gradient_accumulation_steps": 1,
-        "fp16": {"enabled": True},
+        # bf16 is preferred over fp16 on A100: no loss scaling needed, more
+        # numerically stable, and DeepSpeed's BF16Optimizer skips the fp32
+        # master-weight copy that fp16 mode maintains — saving ~4 bytes/param.
+        "bf16": {"enabled": True},
         "optimizer": {
             "type": "AdamW",
             "params": {
@@ -60,7 +63,10 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         "activation_checkpointing": {
             "partition_activations":          True,
             "contiguous_memory_optimization": True,
+            "cpu_checkpointing":              False,
         },
+        # Per-step forward/backward/communication timing breakdown in DS logs.
+        "wall_clock_breakdown": True,
         "steps_per_print": 10000,
     }
 
@@ -68,9 +74,9 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         cfg["zero_optimization"].update({
             # overlap_comm=False keeps communication and compute separate for clean measurement.
             "overlap_comm": False,
-            # 5e7 (50M params = 100 MB fp16) is the confirmed-working value for the 6.7B
-            # model, which has only 13.4 GB headroom after sharded weights+optimizer states.
-            # Keeps at most one partial weight matrix in the all-gather cache at a time.
+            # 5e7 (50M params = 100 MB bf16) caps the all-gather prefetch cache.
+            # bf16 saves ~4 bytes/param vs fp16 (no fp32 master weights) giving
+            # more headroom, but 5e7 remains conservative and confirmed-safe.
             "stage3_max_live_parameters": 5e7,
             "stage3_max_reuse_distance":  5e7,
         })

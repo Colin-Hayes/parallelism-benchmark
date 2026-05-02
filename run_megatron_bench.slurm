@@ -20,6 +20,7 @@ source ~/benchmark_env/bin/activate
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=30
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export NCCL_DEBUG=WARN
 
 BASE=/projects/bdes/$USER/benchmark
 RESULTS=$BASE/results

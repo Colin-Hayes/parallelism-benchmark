@@ -18,6 +18,7 @@ module load pytorch-conda
 source ~/benchmark_env/bin/activate
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export NCCL_DEBUG=WARN
 
 BASE=/projects/bdes/$USER/benchmark
 RESULTS=$BASE/results

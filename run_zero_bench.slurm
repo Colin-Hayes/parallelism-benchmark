@@ -4,9 +4,9 @@
 #SBATCH --partition=gpuA100x4
 #SBATCH --account=bdes-delta-gpu
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=4
+#SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
@@ -20,6 +20,8 @@ source ~/benchmark_env/bin/activate
 # expandable_segments lets the allocator grow/shrink segments dynamically,
 # which avoids the fragmentation-induced OOMs reported in the ZeRO-3 6.7B run.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# WARN captures NCCL errors without flooding the log with INFO-level handshakes.
+export NCCL_DEBUG=WARN
 
 BASE=/projects/bdes/$USER/benchmark
 RESULTS=$BASE/results

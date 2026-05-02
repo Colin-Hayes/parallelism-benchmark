@@ -65,9 +65,10 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         num_attention_heads=model_cfg["n_head"],
         ffn_hidden_size=4 * model_cfg["n_embd"],
         use_cpu_initialization=True,   # shard params at init, avoid GPU OOM
-        fp16=True,
-        params_dtype=torch.float16,
-        pipeline_dtype=torch.float16,
+        # bf16 is native on A100: no loss scaling, no fp32 master-weight copy.
+        bf16=True,
+        params_dtype=torch.bfloat16,
+        pipeline_dtype=torch.bfloat16,
         add_bias_linear=True,
         # Disable fused kernels — they require TransformerEngine / APEX
         bias_activation_fusion=False,
@@ -92,7 +93,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         post_process=mpu.is_pipeline_last_stage(),
     )
 
-    return model.cuda().half()
+    return model.cuda().bfloat16()
 
 
 # ── Data iterator ─────────────────────────────────────────────────────────────
