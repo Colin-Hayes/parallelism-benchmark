@@ -45,15 +45,8 @@ BENCH_STEPS  = 20
 
 def _get_layer_spec():
     """Return the GPT transformer layer spec using local (non-TransformerEngine) ops."""
-    try:
-        from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_local_spec
-        return get_gpt_layer_local_spec()
-    except (ImportError, TypeError):
-        # Older megatron-core versions export a different name
-        from megatron.core.models.gpt.gpt_layer_specs import (
-            get_gpt_layer_with_transformer_engine_spec,
-        )
-        return get_gpt_layer_with_transformer_engine_spec()
+    from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_local_spec
+    return get_gpt_layer_local_spec()
 
 
 # ── Model construction ────────────────────────────────────────────────────────
@@ -222,6 +215,15 @@ def _benchmark_megatron(
     opt                   = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
+    # Megatron stores activations as (seq_len, micro_batch_size, hidden_size).
+    # The pipeline schedule needs this shape upfront to pre-allocate P2P recv
+    # buffers before Stage 1 can receive from Stage 0. With num_microbatches=1
+    # (dry run) the schedule is sequential so the absence of tensor_shape goes
+    # unnoticed; with num_microbatches>1 the 1F1B warmup phase issues a recv
+    # before the sender has computed, and an uninitialised buffer causes a hang
+    # or silent NCCL crash.
+    tensor_shape = (seq_len, batch_size, model.config.hidden_size)
+
     def _step():
         opt.zero_grad(set_to_none=True)
         forward_backward_func(
@@ -232,6 +234,7 @@ def _benchmark_megatron(
             seq_length=seq_len,
             micro_batch_size=batch_size,
             forward_only=False,
+            tensor_shape=tensor_shape,
         )
         opt.step()
 

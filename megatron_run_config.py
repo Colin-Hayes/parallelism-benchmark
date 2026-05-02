@@ -37,7 +37,11 @@ def main():
     dist.init_process_group(
         backend="nccl",
         device_id=torch.device(f"cuda:{local_rank}"),
-        timeout=timedelta(seconds=120),
+        # 6.7B with use_cpu_initialization=True allocates ~13 GB on CPU per rank.
+        # With 4 ranks competing for RAM bandwidth on the same node, the slowest
+        # rank can lag the fastest by >120s, causing NCCL to time out before the
+        # first collective. 600s gives ample margin even under memory pressure.
+        timeout=timedelta(seconds=600),
     )
     dist.barrier()   # ensure all ranks finish init before any rank proceeds
     world_size = dist.get_world_size()
