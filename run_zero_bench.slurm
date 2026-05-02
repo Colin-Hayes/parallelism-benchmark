@@ -11,8 +11,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
 #SBATCH --no-requeue
-#SBATCH -o /projects/bdes-delta-gpu/$USER/benchmark/logs/zero_%j.out
-#SBATCH -e /projects/bdes-delta-gpu/$USER/benchmark/logs/zero_%j.err
+#SBATCH -o /projects/bdes/$USER/benchmark/logs/zero_%j.out
+#SBATCH -e /projects/bdes/$USER/benchmark/logs/zero_%j.err
 
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
@@ -21,7 +21,7 @@ source ~/benchmark_env/bin/activate
 # which avoids the fragmentation-induced OOMs reported in the ZeRO-3 6.7B run.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-BASE=/projects/bdes-delta-gpu/$USER/benchmark
+BASE=/projects/bdes/$USER/benchmark
 RESULTS=$BASE/results
 LOGS=$BASE/logs
 mkdir -p $RESULTS $LOGS

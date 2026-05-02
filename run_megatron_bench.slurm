@@ -11,8 +11,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
 #SBATCH --no-requeue
-#SBATCH -o /projects/bdes-delta-gpu/$USER/benchmark/logs/megatron_%j.out
-#SBATCH -e /projects/bdes-delta-gpu/$USER/benchmark/logs/megatron_%j.err
+#SBATCH -o /projects/bdes/$USER/benchmark/logs/megatron_%j.out
+#SBATCH -e /projects/bdes/$USER/benchmark/logs/megatron_%j.err
 
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
@@ -21,7 +21,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=30
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-BASE=/projects/bdes-delta-gpu/$USER/benchmark
+BASE=/projects/bdes/$USER/benchmark
 RESULTS=$BASE/results
 LOGS=$BASE/logs
 mkdir -p $RESULTS $LOGS
