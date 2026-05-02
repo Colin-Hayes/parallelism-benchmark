@@ -11,8 +11,8 @@
 #SBATCH --time=02:00:00
 #SBATCH --exclusive
 #SBATCH --no-requeue
-#SBATCH -o /u/$USER/benchmark/logs/zero_%j.out
-#SBATCH -e /u/$USER/benchmark/logs/zero_%j.err
+#SBATCH -o /projects/bdes-delta-gpu/$USER/benchmark/logs/zero_%j.out
+#SBATCH -e /projects/bdes-delta-gpu/$USER/benchmark/logs/zero_%j.err
 
 module load pytorch-conda
 source ~/benchmark_env/bin/activate
@@ -21,14 +21,56 @@ source ~/benchmark_env/bin/activate
 # which avoids the fragmentation-induced OOMs reported in the ZeRO-3 6.7B run.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-RESULTS=/u/$USER/benchmark/results
-mkdir -p $RESULTS /u/$USER/benchmark/logs
+BASE=/projects/bdes-delta-gpu/$USER/benchmark
+RESULTS=$BASE/results
+LOGS=$BASE/logs
+mkdir -p $RESULTS $LOGS
 
-nvidia-smi --query-gpu=index,name,uuid,memory.total --format=csv \
-    | tee $RESULTS/gpu_info_${SLURM_JOB_ID}.txt
+# ── Job metadata ──────────────────────────────────────────────────────────────
+echo "========================================================"
+echo "Job ID       : $SLURM_JOB_ID"
+echo "Job name     : $SLURM_JOB_NAME"
+echo "Node         : $(hostname)"
+echo "Start time   : $(date)"
+echo "Working dir  : $(pwd)"
+echo "========================================================"
 
+# ── Software versions ─────────────────────────────────────────────────────────
+echo ""
+echo "--- Software versions ---"
+python  --version
+python  -c "import torch;      print('torch      ', torch.__version__)"
+python  -c "import deepspeed;  print('deepspeed  ', deepspeed.__version__)"
+python  -c "import transformers; print('transformers', transformers.__version__)"
+nvcc    --version 2>/dev/null | grep release || echo "nvcc not on PATH"
+echo ""
+
+# ── GPU inventory ─────────────────────────────────────────────────────────────
+nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total,compute_cap \
+    --format=csv | tee $RESULTS/gpu_info_${SLURM_JOB_ID}.txt
+echo ""
+
+# ── Continuous GPU monitor (runs in background, sampled every 10 s) ───────────
+nvidia-smi dmon \
+    --select ugmt \
+    --delay 10 \
+    > $LOGS/gpu_dmon_${SLURM_JOB_ID}.txt &
+DMON_PID=$!
+
+# ── Benchmark ─────────────────────────────────────────────────────────────────
 python -m torch.distributed.run \
     --nproc_per_node=4 \
     --master_port=29510 \
     /u/$USER/benchmark/zero_bench.py \
     --output $RESULTS/results_zero_${SLURM_JOB_ID}.json
+
+STATUS=$?
+
+# ── Teardown ──────────────────────────────────────────────────────────────────
+kill $DMON_PID 2>/dev/null
+
+echo ""
+echo "--- Job finished ---"
+echo "End time  : $(date)"
+echo "Exit code : $STATUS"
+exit $STATUS
