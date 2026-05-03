@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_megatron_bench.slurm
 #SBATCH --job-name=megatron_bench
-#SBATCH --partition=gpuA100x4
+#SBATCH --partition=gpuA40x4
 #SBATCH --account=bdes-delta-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -65,6 +65,9 @@ python /u/$USER/benchmark/megatron_bench.py \
     --nproc_per_node 4
 
 STATUS=$?
+
+# ── Copy results to home directory ────────────────────────────────────────────
+cp $RESULTS/results_megatron_${SLURM_JOB_ID}.json /u/$USER/benchmark/results_megatron_${SLURM_JOB_ID}.json 2>/dev/null || true
 
 # ── Teardown ──────────────────────────────────────────────────────────────────
 kill $DMON_PID 2>/dev/null

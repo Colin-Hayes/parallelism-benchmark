@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_zero_bench.slurm
 #SBATCH --job-name=zero_bench
-#SBATCH --partition=gpuA100x4
+#SBATCH --partition=gpuA40x4
 #SBATCH --account=bdes-delta-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
