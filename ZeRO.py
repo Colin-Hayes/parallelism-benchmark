@@ -94,6 +94,63 @@ def _ds_config(stage: int, batch_size: int) -> dict:
     return cfg
 
 
+# ── Memory profiling helpers ──────────────────────────────────────────────────
+
+def _alloc_gb(device) -> float:
+    torch.cuda.synchronize(device)
+    return torch.cuda.memory_allocated(device) / 1e9
+
+def _optimizer_state_gb(engine) -> float:
+    """Actual GPU memory used by Adam m and v tensors on this rank."""
+    gb = 0.0
+    inner = getattr(engine.optimizer, "optimizer", engine.optimizer)
+    for state in inner.state.values():
+        for v in state.values():
+            if isinstance(v, torch.Tensor) and v.is_cuda:
+                gb += v.numel() * v.element_size() / 1e9
+    return gb
+
+def _profile_step(engine, local_rank: int, batch_size: int, seq_len: int) -> dict:
+    """
+    Instrument one training step to capture per-phase memory on rank 0.
+
+    Runs after warmup so allocator and NCCL buffers are settled. Does NOT
+    reset peak stats — the caller owns that so the timed section peak is clean.
+    """
+    def _make_batch():
+        ids = torch.randint(0, 50257, (batch_size, seq_len), device=f"cuda:{local_rank}")
+        return {"input_ids": ids, "labels": ids}
+
+    m_base    = _alloc_gb(local_rank)
+
+    batch = _make_batch()
+    loss  = engine(**batch).loss
+    m_fwd = _alloc_gb(local_rank)
+
+    engine.backward(loss)
+    m_bwd = _alloc_gb(local_rank)
+
+    engine.step()
+    m_step = _alloc_gb(local_rank)
+
+    free, total = torch.cuda.mem_get_info(local_rank)
+    non_pytorch_gb  = (total - free) / 1e9 - torch.cuda.memory_reserved(local_rank) / 1e9
+    reserved_gb     = torch.cuda.memory_reserved(local_rank) / 1e9
+    opt_state_gb    = _optimizer_state_gb(engine)
+
+    return {
+        "baseline_gb":          round(m_base,               3),
+        "after_forward_gb":     round(m_fwd,                3),
+        "after_backward_gb":    round(m_bwd,                3),
+        "after_step_gb":        round(m_step,               3),
+        "delta_activations_gb": round(m_fwd  - m_base,      3),
+        "delta_gradients_gb":   round(m_bwd  - m_fwd,       3),
+        "reserved_gb":          round(reserved_gb,          3),
+        "non_pytorch_gb":       round(non_pytorch_gb,       3),
+        "optimizer_states_gb":  round(opt_state_gb,         3),
+    }
+
+
 # ── Core benchmark loop ───────────────────────────────────────────────────────
 
 def _benchmark_engine(
@@ -101,9 +158,9 @@ def _benchmark_engine(
     local_rank: int,
     batch_size: int,
     seq_len:    int,
-) -> tuple[float, float]:
+) -> tuple[float, float, dict]:
     """
-    Run WARMUP_STEPS warmup steps, then BENCH_STEPS timed steps.
+    Run WARMUP_STEPS warmup steps, one profiled step, then BENCH_STEPS timed steps.
 
     Memory stats are reset just before the timed section so warmup
     allocations don't inflate the peak reading.
@@ -114,7 +171,7 @@ def _benchmark_engine(
 
     Returns
     -------
-    (throughput_samples_per_sec, peak_mem_gb)
+    (throughput_samples_per_sec, peak_mem_gb, mem_profile)
     """
     def _make_batch():
         ids = torch.randint(
@@ -131,6 +188,11 @@ def _benchmark_engine(
         engine.step()
 
     torch.cuda.synchronize(local_rank)
+
+    # One instrumented step after warmup to capture per-phase memory breakdown.
+    # Runs before peak reset so it doesn't affect the timed-section high-water mark.
+    mem_profile = _profile_step(engine, local_rank, batch_size, seq_len)
+
     torch.cuda.reset_peak_memory_stats(local_rank)
 
     # Barrier ensures all ranks start timing together, so elapsed is not
@@ -147,13 +209,13 @@ def _benchmark_engine(
     # Total system throughput: samples processed by the entire cluster per second.
     # With DDP each GPU processes batch_size independent samples simultaneously.
     throughput = round((BENCH_STEPS * batch_size * dist.get_world_size()) / elapsed, 2)
-    
+
     peak_this_rank = torch.cuda.max_memory_allocated(local_rank) / 1e9
     peak_tensor = torch.tensor(peak_this_rank, device=f"cuda:{local_rank}")
     dist.all_reduce(peak_tensor, op=dist.ReduceOp.MAX)
     peak_mem_gb = round(peak_tensor.item(), 3)
 
-    return throughput, peak_mem_gb
+    return throughput, peak_mem_gb, mem_profile
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -219,7 +281,7 @@ def run_zero(
             config=ds_cfg,
         )
 
-        throughput, peak_mem = _benchmark_engine(
+        throughput, peak_mem, mem_profile = _benchmark_engine(
             engine, local_rank, batch_size, seq_len
         )
 
@@ -233,7 +295,8 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": throughput,
-            "peak_gpu_mem_gb":      peak_mem,
+            "peak_gpu_mem_gb":            peak_mem,
+            "mem_profile":                mem_profile,
             "status":                     "ok",
             "error":                      None,
         }
@@ -253,7 +316,8 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
-            "peak_gpu_mem_gb":      None,
+            "peak_gpu_mem_gb":            None,
+            "mem_profile":                None,
             "status":                     "OOM",
             "error":                      str(e),
         }
@@ -273,7 +337,8 @@ def run_zero(
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
-            "peak_gpu_mem_gb":      None,
+            "peak_gpu_mem_gb":            None,
+            "mem_profile":                None,
             "status":                     "error",
             "error":                      str(e),
         }
