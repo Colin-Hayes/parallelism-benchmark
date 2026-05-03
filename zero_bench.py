@@ -1,13 +1,21 @@
 """
 zero_bench.py
 -------------
-Runs ZeRO Stage 0 and ZeRO Stage 3 across model sizes.
-Launch with: torchrun --nproc_per_node=4 zero_bench.py --output PATH
+Orchestrator for ZeRO Stage 0 and Stage 3 benchmarks across model sizes.
+
+Each (stage, model_size) config runs in its own torchrun subprocess so that
+CUDA/NCCL state from one run cannot inflate peak memory readings in the next.
+Results are collected from per-config temp JSON files and merged into --output.
+
+Launch with: python zero_bench.py --output PATH [--nproc_per_node 4]
 """
-import argparse, json, os, socket
-import torch
-import torch.distributed as dist
-from ZeRO import run_zero
+
+import argparse
+import json
+import os
+import random
+import subprocess
+import tempfile
 
 MODEL_CONFIGS = {
     "125M": dict(n_layer=12, n_head=12,  n_embd=768),
@@ -15,8 +23,46 @@ MODEL_CONFIGS = {
     "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
 }
-BATCH_SIZE = 4
-SEQ_LEN    = 512
+
+SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zero_run_config.py")
+
+
+def _run_config(stage, model_size, nproc, dry_run):
+    port = random.randint(20000, 40000)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        tmp = f.name
+
+    cmd = [
+        "python", "-m", "torch.distributed.run",
+        f"--nproc_per_node={nproc}",
+        f"--master_port={port}",
+        SCRIPT,
+        "--stage",      str(stage),
+        "--model_size", model_size,
+        "--output",     tmp,
+    ]
+    if dry_run:
+        cmd.append("--dry_run")
+
+    proc = subprocess.run(cmd, timeout=600)
+
+    if os.path.exists(tmp):
+        with open(tmp) as f:
+            result = json.load(f)
+        os.unlink(tmp)
+    else:
+        result = {
+            "strategy":                   f"zero{stage}",
+            "throughput_samples_per_sec": None,
+            "peak_gpu_mem_gb":            None,
+            "mem_profile":                None,
+            "model_size":                 model_size,
+            "status":                     "crash",
+            "error":                      f"subprocess exited with code {proc.returncode}",
+        }
+
+    return result
+
 
 def save_results(path, records):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -28,50 +74,29 @@ def save_results(path, records):
     with open(path, "w") as f:
         json.dump(existing, f, indent=2)
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--dry_run", action="store_true")
-    parser.add_argument("--model_size", choices=list(MODEL_CONFIGS), default=None,
+    parser.add_argument("--output",         required=True)
+    parser.add_argument("--dry_run",        action="store_true")
+    parser.add_argument("--model_size",     choices=list(MODEL_CONFIGS), default=None,
                         help="Run a single model size instead of all four")
+    parser.add_argument("--nproc_per_node", type=int, default=4)
     args = parser.parse_args()
 
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(
-        backend="nccl",
-        device_id=torch.device(f"cuda:{local_rank}"),
-    )
-    world_size = dist.get_world_size()
-
-    if args.dry_run:
-        configs = {"125M_tiny": dict(n_layer=2, n_head=2, n_embd=64)}
-    elif args.model_size:
-        configs = {args.model_size: MODEL_CONFIGS[args.model_size]}
-    else:
-        configs = MODEL_CONFIGS
-    batch_size = 1 if args.dry_run else BATCH_SIZE
-    seq_len    = 16 if args.dry_run else SEQ_LEN
-
+    sizes = [args.model_size] if args.model_size else list(MODEL_CONFIGS)
     all_results = []
 
-    for size_name, model_cfg in configs.items():
+    for model_size in sizes:
         for stage in [0, 3]:
-            dist.barrier()
-            result = run_zero(stage, model_cfg, batch_size, seq_len, local_rank)
-            result.update({
-                "model_size": size_name, "num_gpus": world_size,
-                "batch_size": batch_size, "seq_len": seq_len,
-                "gpu": torch.cuda.get_device_name(local_rank),
-            })
-            if local_rank == 0:
-                all_results.append(result)
-                print(result)
+            print(f"\n--- zero{stage} {model_size} ---", flush=True)
+            result = _run_config(stage, model_size, args.nproc_per_node, args.dry_run)
+            all_results.append(result)
+            print(result, flush=True)
 
-    if local_rank == 0:
-        save_results(args.output, all_results)
+    save_results(args.output, all_results)
+    print(f"\nResults saved to {args.output}")
 
-    dist.destroy_process_group()
 
 if __name__ == "__main__":
     main()

@@ -60,11 +60,11 @@ nvidia-smi dmon \
 DMON_PID=$!
 
 # ── Benchmark ─────────────────────────────────────────────────────────────────
-python -m torch.distributed.run \
-    --nproc_per_node=4 \
-    --master_port=29510 \
-    /u/$USER/benchmark/zero_bench.py \
-    --output $RESULTS/results_zero_${SLURM_JOB_ID}.json
+# zero_bench.py is a plain Python orchestrator — it spawns one torchrun
+# subprocess per config so CUDA/NCCL state does not accumulate across runs.
+python /u/$USER/benchmark/zero_bench.py \
+    --output $RESULTS/results_zero_${SLURM_JOB_ID}.json \
+    --nproc_per_node 4
 
 STATUS=$?
 
