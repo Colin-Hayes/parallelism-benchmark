@@ -73,9 +73,10 @@ def _ds_config(stage: int, batch_size: int) -> dict:
     if stage == 3:
         cfg["zero_optimization"].update({
             # overlap_comm prefetches the next parameter shard during current compute,
-            # hiding all-gather latency at the cost of holding two shards in memory
-            # simultaneously (~200 MB extra). Disabled to fit 6.7B on 40 GB A100s.
-            "overlap_comm": False,
+            # hiding all-gather latency at the cost of ~200 MB extra (two shards live
+            # simultaneously). Safe now that sub_group_size=1e7 dropped peak from
+            # 44 GB to 26.8 GB, leaving >13 GB headroom on 40 GB A100s.
+            "overlap_comm": True,
             "contiguous_gradients": True,
             # 5e7 (50M params = 100 MB bf16) caps the all-gather prefetch cache.
             # bf16 saves ~4 bytes/param vs fp16 (no fp32 master weights) giving
