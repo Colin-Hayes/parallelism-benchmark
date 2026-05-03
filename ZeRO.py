@@ -310,9 +310,10 @@ def run_zero(
             del model
         except NameError:
             pass
+        gc.collect()
+        torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        gc.collect()
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
@@ -331,9 +332,10 @@ def run_zero(
             del model
         except NameError:
             pass
+        gc.collect()
+        torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        gc.collect()
         return {
             "strategy":                   strategy,
             "throughput_samples_per_sec": None,
