@@ -32,6 +32,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument("--model_size", choices=list(MODEL_CONFIGS), default=None,
+                        help="Run a single model size instead of all four")
     args = parser.parse_args()
 
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -42,7 +44,12 @@ def main():
     )
     world_size = dist.get_world_size()
 
-    configs    = {"125M_tiny": dict(n_layer=2, n_head=2, n_embd=64)} if args.dry_run else MODEL_CONFIGS
+    if args.dry_run:
+        configs = {"125M_tiny": dict(n_layer=2, n_head=2, n_embd=64)}
+    elif args.model_size:
+        configs = {args.model_size: MODEL_CONFIGS[args.model_size]}
+    else:
+        configs = MODEL_CONFIGS
     batch_size = 1 if args.dry_run else BATCH_SIZE
     seq_len    = 16 if args.dry_run else SEQ_LEN
 
