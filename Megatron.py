@@ -192,6 +192,74 @@ def _make_forward_step(seq_len: int, debug: bool = False):
     return forward_step
 
 
+# ── Memory profiling helpers ──────────────────────────────────────────────────
+
+def _alloc_gb(device) -> float:
+    torch.cuda.synchronize(device)
+    return torch.cuda.memory_allocated(device) / 1e9
+
+def _optimizer_state_gb(opt) -> float:
+    """Actual GPU memory used by Adam m and v tensors on this rank."""
+    gb = 0.0
+    for state in opt.state.values():
+        for v in state.values():
+            if isinstance(v, torch.Tensor) and v.is_cuda:
+                gb += v.numel() * v.element_size() / 1e9
+    return gb
+
+def _param_gb(model) -> float:
+    """GPU memory used by this rank's model parameters."""
+    return sum(
+        p.numel() * p.element_size() / 1e9
+        for p in model.parameters() if p.is_cuda
+    )
+
+def _profile_step(
+    model, opt, forward_backward_func, forward_step,
+    data_iter, local_rank, batch_size, seq_len, num_microbatches,
+) -> dict:
+    """
+    Instrument one training step to capture per-phase memory on rank 0.
+
+    forward_backward_func runs the full 1F1B schedule (forward + backward
+    interleaved), so we capture baseline → after fwd+bwd → after step.
+    """
+    m_base = _alloc_gb(local_rank)
+
+    opt.zero_grad(set_to_none=True)
+    forward_backward_func(
+        forward_step_func=forward_step,
+        data_iterator=data_iter,
+        model=[model],
+        num_microbatches=num_microbatches,
+        seq_length=seq_len,
+        micro_batch_size=batch_size,
+        forward_only=False,
+    )
+    m_fwdbwd = _alloc_gb(local_rank)
+
+    opt.step()
+    m_step = _alloc_gb(local_rank)
+
+    free, total = torch.cuda.mem_get_info(local_rank)
+    non_pytorch_gb = (total - free) / 1e9 - torch.cuda.memory_reserved(local_rank) / 1e9
+    reserved_gb    = torch.cuda.memory_reserved(local_rank) / 1e9
+    opt_state_gb   = _optimizer_state_gb(opt)
+    param_gb       = _param_gb(model)
+
+    return {
+        "baseline_gb":          round(m_base,              3),
+        "after_fwd_bwd_gb":     round(m_fwdbwd,            3),
+        "after_step_gb":        round(m_step,              3),
+        "delta_fwd_bwd_gb":     round(m_fwdbwd - m_base,  3),
+        "delta_step_gb":        round(m_step - m_fwdbwd,  3),
+        "reserved_gb":          round(reserved_gb,         3),
+        "non_pytorch_gb":       round(non_pytorch_gb,      3),
+        "param_shard_gb":       round(param_gb,            3),
+        "optimizer_states_gb":  round(opt_state_gb,        3),
+    }
+
+
 # ── Core benchmark loop ───────────────────────────────────────────────────────
 
 def _benchmark_megatron(
@@ -202,9 +270,9 @@ def _benchmark_megatron(
     num_microbatches: int,
     vocab_size:      int,
     debug:           bool = False,
-) -> tuple[float, float]:
+) -> tuple[float, float, dict]:
     """
-    WARMUP_STEPS warmup steps then BENCH_STEPS timed steps using the 1F1B schedule.
+    WARMUP_STEPS warmup steps, one profiled step, then BENCH_STEPS timed steps.
 
     Throughput is reported as global_samples / elapsed / world_size so it is
     directly comparable to ZeRO's per-GPU-equivalent metric.
@@ -233,6 +301,13 @@ def _benchmark_megatron(
         _step()
 
     torch.cuda.synchronize(local_rank)
+
+    # One instrumented step after warmup to capture per-phase memory breakdown.
+    mem_profile = _profile_step(
+        model, opt, forward_backward_func, forward_step,
+        data_iter, local_rank, batch_size, seq_len, num_microbatches,
+    )
+
     torch.cuda.reset_peak_memory_stats(local_rank)
 
     # Barrier ensures all ranks start timing together.
@@ -253,7 +328,7 @@ def _benchmark_megatron(
     dist.all_reduce(peak_tensor, op=dist.ReduceOp.MAX)
     peak_mem_gb    = round(peak_tensor.item(), 3)
 
-    return throughput, peak_mem_gb
+    return throughput, peak_mem_gb, mem_profile
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -315,7 +390,7 @@ def run_megatron(
         model      = _build_model(model_cfg, seq_len)
         vocab_size = math.ceil(50257 / tp_size) * tp_size
 
-        throughput, peak_mem = _benchmark_megatron(
+        throughput, peak_mem, mem_profile = _benchmark_megatron(
             model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, debug=debug
         )
 
@@ -333,6 +408,7 @@ def run_megatron(
             "num_microbatches":           num_microbatches,
             "throughput_samples_per_sec": throughput,
             "peak_gpu_mem_gb":            peak_mem,
+            "mem_profile":                mem_profile,
             "status":                     "ok",
             "error":                      None,
         }
@@ -344,9 +420,10 @@ def run_megatron(
             mpu.destroy_model_parallel()
         except Exception:
             pass
+        gc.collect()
+        torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        gc.collect()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
@@ -354,6 +431,7 @@ def run_megatron(
             "num_microbatches":           num_microbatches,
             "throughput_samples_per_sec": None,
             "peak_gpu_mem_gb":            None,
+            "mem_profile":                None,
             "status":                     "OOM",
             "error":                      str(e),
         }
@@ -365,9 +443,10 @@ def run_megatron(
             mpu.destroy_model_parallel()
         except Exception:
             pass
+        gc.collect()
+        torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
-        gc.collect()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
@@ -375,6 +454,7 @@ def run_megatron(
             "num_microbatches":           num_microbatches,
             "throughput_samples_per_sec": None,
             "peak_gpu_mem_gb":            None,
+            "mem_profile":                None,
             "status":                     "error",
             "error":                      str(e),
         }
