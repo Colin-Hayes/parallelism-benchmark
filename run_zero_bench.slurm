@@ -68,6 +68,9 @@ python /u/$USER/benchmark/zero_bench.py \
 
 STATUS=$?
 
+# ── Copy results to home directory ────────────────────────────────────────────
+cp $RESULTS/results_zero_${SLURM_JOB_ID}.json /u/$USER/benchmark/results_zero_${SLURM_JOB_ID}.json 2>/dev/null || true
+
 # ── Teardown ──────────────────────────────────────────────────────────────────
 kill $DMON_PID 2>/dev/null
 
