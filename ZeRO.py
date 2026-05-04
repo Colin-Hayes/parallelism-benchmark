@@ -26,7 +26,7 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         "bf16": {"enabled": True},
         "optimizer": {
             "type": "AdamW",
-            "params": {"lr": 1e-4, "betas": [0.9, 0.999], "eps": 1e-8, "weight_decay": 0.0},
+            "params": {"lr": 1e-4},
         },
         "zero_optimization": {"stage": stage},
     }
@@ -34,8 +34,6 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         cfg["zero_optimization"].update({
             "overlap_comm":         True,
             "contiguous_gradients": True,
-            # Default sub_group_size=1e9 causes a large optimizer step spike; 1e8 is safe.
-            "sub_group_size":       1e8,
         })
     return cfg
 
@@ -145,11 +143,7 @@ def run_zero(
             **model_cfg,
         )
 
-        if stage == 3:
-            with deepspeed.zero.Init(config_dict_or_path=ds_cfg, remote_device="cpu", pin_memory=True):
-                model = GPT2LMHeadModel(config)
-        else:
-            model = GPT2LMHeadModel(config)
+        model = GPT2LMHeadModel(config)
 
         model.gradient_checkpointing_enable()
 
