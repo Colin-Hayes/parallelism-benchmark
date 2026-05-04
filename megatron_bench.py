@@ -27,6 +27,7 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16, n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32, n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32, n_embd=4096),
+    "10B":  dict(n_layer=32, n_head=40, n_embd=5120),
 }
 
 # micro_batch_size × num_microbatches = global_batch_size
@@ -112,6 +113,8 @@ def main():
     parser.add_argument("--output",         required=True)
     parser.add_argument("--dry_run",        action="store_true")
     parser.add_argument("--nproc_per_node", type=int, default=4)
+    parser.add_argument("--model_size",     choices=list(MODEL_CONFIGS), default=None,
+                        help="Run a single model size instead of all")
     args = parser.parse_args()
 
     world_size = args.nproc_per_node
@@ -121,7 +124,12 @@ def main():
               f"Expected tp*pp={world_size}, got {PARALLEL_CONFIGS}")
         return
 
-    configs          = {"125M_tiny": dict(n_layer=2, n_head=4, n_embd=64)} if args.dry_run else MODEL_CONFIGS
+    if args.dry_run:
+        configs = {"125M_tiny": dict(n_layer=2, n_head=4, n_embd=64)}
+    elif args.model_size:
+        configs = {args.model_size: MODEL_CONFIGS[args.model_size]}
+    else:
+        configs = MODEL_CONFIGS
     batch_size       = 1 if args.dry_run else BATCH_SIZE
     seq_len          = 16 if args.dry_run else SEQ_LEN
     num_microbatches = 1 if args.dry_run else NUM_MICROBATCHES
