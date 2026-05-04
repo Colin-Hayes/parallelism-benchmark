@@ -30,11 +30,6 @@ def _ds_config(stage: int, batch_size: int) -> dict:
         },
         "zero_optimization": {"stage": stage},
     }
-    if stage == 3:
-        cfg["zero_optimization"].update({
-            "overlap_comm":         True,
-            "contiguous_gradients": True,
-        })
     return cfg
 
 
