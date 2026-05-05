@@ -27,8 +27,10 @@ def _get_layer_spec():
 
 
 def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
+    pp = mpu.get_pipeline_model_parallel_world_size()
+    layers_per_stage = model_cfg["n_layer"] // pp
     config = TransformerConfig(
-        num_layers=model_cfg["n_layer"],
+        num_layers=layers_per_stage,
         hidden_size=model_cfg["n_embd"],
         num_attention_heads=model_cfg["n_head"],
         ffn_hidden_size=4 * model_cfg["n_embd"],
@@ -43,7 +45,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         gradient_accumulation_fusion=False,
         recompute_granularity="full",
         recompute_method="uniform",
-        recompute_num_layers=model_cfg["n_layer"] // mpu.get_pipeline_model_parallel_world_size(),
+        recompute_num_layers=layers_per_stage,
     )
 
     tp = mpu.get_tensor_model_parallel_world_size()
