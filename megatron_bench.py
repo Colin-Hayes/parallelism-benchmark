@@ -4,15 +4,14 @@ megatron_bench.py
 Runs Megatron TP+PP across model sizes and parallel configurations.
 Launch with: python megatron_bench.py --output PATH [--nproc_per_node 4]
 
-Each (model_size, tp, pp) config is isolated in its own torchrun subprocess.
-An NCCL crash or OOM in one config does not kill the benchmark — it is recorded
-as status="crash" and the next config runs in a fresh process group.
+Each (model_size, tp, pp, batch_size, seq_len) config is isolated in its own
+torchrun subprocess. An NCCL crash or OOM in one config does not kill the
+benchmark — it is recorded as status="crash" and the next config runs in a
+fresh process group.
 
 Tests two layouts on 4 GPUs:
   TP=4, PP=1 — all 4 GPUs split each layer (no pipeline, 2 all-reduces/layer)
   TP=2, PP=2 — 2 TP ranks per stage, 2 pipeline stages (1F1B schedule)
-
-Throughput is reported as per-GPU-equivalent samples/sec to match zero_bench.py.
 """
 import argparse
 import json
@@ -27,18 +26,24 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16, n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32, n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32, n_embd=4096),
+    "10B":  dict(n_layer=32, n_head=40, n_embd=5120),
 }
 
-# micro_batch_size × num_microbatches = global_batch_size
-# Set to match zero_bench: 4 samples/GPU × 4 GPUs = 16 total
-BATCH_SIZE       = 4
-SEQ_LEN          = 512
+# (batch_size, seq_len) pairs to test per model size.
+BATCH_SEQ_CONFIGS = {
+    "125M": [(4, 512), (8, 512), (16, 512), (4, 1024), (8, 1024), (4, 2048)],
+    "1.3B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
+    "2.7B": [(4, 512), (8, 512), (4, 1024)],
+    "6.7B": [(4, 512), (4, 1024)],
+    "10B":  [(4, 512)],
+}
+
 NUM_MICROBATCHES = 4
 
 # (tp_size, pp_size) pairs — must satisfy tp × pp == world_size
 PARALLEL_CONFIGS = [
-    (4, 1),   # full tensor parallelism, no pipeline
-    (2, 2),   # mixed TP + PP
+    (4, 1),
+    (2, 2),
 ]
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -59,10 +64,6 @@ def save_results(path, records):
 def run_one_config(tp_size, pp_size, size_name, model_cfg,
                    batch_size, seq_len, num_microbatches,
                    nproc, port, dry_run):
-    """
-    Spawn a torchrun subprocess for one (size_name, tp_size, pp_size) config.
-    Returns the result dict, or a crash dict if the subprocess died unexpectedly.
-    """
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp_path = f.name
 
@@ -99,6 +100,8 @@ def run_one_config(tp_size, pp_size, size_name, model_cfg,
             "tp_size":                    tp_size,
             "pp_size":                    pp_size,
             "num_microbatches":           num_microbatches,
+            "batch_size":                 batch_size,
+            "seq_len":                    seq_len,
             "throughput_samples_per_sec": None,
             "peak_gpu_mem_gb":            None,
             "status":                     "crash",
@@ -119,34 +122,32 @@ def main():
     world_size = args.nproc_per_node
     valid_parallel = [(tp, pp) for tp, pp in PARALLEL_CONFIGS if tp * pp == world_size]
     if not valid_parallel:
-        print(f"No valid TP/PP configs for world_size={world_size}. "
-              f"Expected tp*pp={world_size}, got {PARALLEL_CONFIGS}")
+        print(f"No valid TP/PP configs for world_size={world_size}.")
         return
 
     if args.dry_run:
-        configs = {"125M_tiny": dict(n_layer=2, n_head=4, n_embd=64)}
-    elif args.model_size:
-        configs = {args.model_size: MODEL_CONFIGS[args.model_size]}
+        configs    = {"125M_tiny": dict(n_layer=2, n_head=4, n_embd=64)}
+        batch_seq  = [(1, 16)]
     else:
-        configs = MODEL_CONFIGS
-    batch_size       = 1 if args.dry_run else BATCH_SIZE
-    seq_len          = 16 if args.dry_run else SEQ_LEN
-    num_microbatches = 1 if args.dry_run else NUM_MICROBATCHES
+        configs   = {args.model_size: MODEL_CONFIGS[args.model_size]} if args.model_size else MODEL_CONFIGS
+        batch_seq = None  # resolved per model below
 
     all_results = []
 
     for size_name, model_cfg in configs.items():
+        bs_configs = batch_seq if args.dry_run else BATCH_SEQ_CONFIGS[size_name]
         for tp_size, pp_size in valid_parallel:
-            port = random.randint(20000, 40000)
-            print(f"\n=== {size_name} TP={tp_size} PP={pp_size} (port {port}) ===",
-                  flush=True)
-            result = run_one_config(
-                tp_size, pp_size, size_name, model_cfg,
-                batch_size, seq_len, num_microbatches,
-                world_size, port, args.dry_run,
-            )
-            print(result, flush=True)
-            all_results.append(result)
+            for batch_size, seq_len in bs_configs:
+                port = random.randint(20000, 40000)
+                print(f"\n=== {size_name} TP={tp_size} PP={pp_size} "
+                      f"bs={batch_size} seq={seq_len} (port {port}) ===", flush=True)
+                result = run_one_config(
+                    tp_size, pp_size, size_name, model_cfg,
+                    batch_size, seq_len, NUM_MICROBATCHES,
+                    world_size, port, args.dry_run,
+                )
+                print(result, flush=True)
+                all_results.append(result)
 
     save_results(args.output, all_results)
 

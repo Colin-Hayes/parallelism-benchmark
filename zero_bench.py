@@ -3,9 +3,10 @@ zero_bench.py
 -------------
 Orchestrator for ZeRO Stage 0 and Stage 3 benchmarks across model sizes.
 
-Each (stage, model_size) config runs in its own torchrun subprocess so that
-CUDA/NCCL state from one run cannot inflate peak memory readings in the next.
-Results are collected from per-config temp JSON files and merged into --output.
+Each (stage, model_size, batch_size, seq_len) config runs in its own torchrun
+subprocess so that CUDA/NCCL state from one run cannot inflate peak memory
+readings in the next. Results are collected from per-config temp JSON files
+and merged into --output.
 
 Launch with: python zero_bench.py --output PATH [--nproc_per_node 4]
 """
@@ -22,12 +23,23 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
+    "10B":  dict(n_layer=32, n_head=40,  n_embd=5120),
+}
+
+# (batch_size, seq_len) pairs to test per model size.
+# Larger models get fewer configs to avoid long runtimes from OOM retries.
+BATCH_SEQ_CONFIGS = {
+    "125M": [(4, 512), (8, 512), (16, 512), (4, 1024), (8, 1024), (4, 2048)],
+    "1.3B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
+    "2.7B": [(4, 512), (8, 512), (4, 1024)],
+    "6.7B": [(4, 512), (4, 1024)],
+    "10B":  [(4, 512)],
 }
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zero_run_config.py")
 
 
-def _run_config(stage, model_size, nproc, dry_run):
+def _run_config(stage, model_size, batch_size, seq_len, nproc, dry_run):
     port = random.randint(20000, 40000)
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         tmp = f.name
@@ -39,6 +51,8 @@ def _run_config(stage, model_size, nproc, dry_run):
         SCRIPT,
         "--stage",      str(stage),
         "--model_size", model_size,
+        "--batch_size", str(batch_size),
+        "--seq_len",    str(seq_len),
         "--output",     tmp,
     ]
     if dry_run:
@@ -57,6 +71,8 @@ def _run_config(stage, model_size, nproc, dry_run):
             "peak_gpu_mem_gb":            None,
             "mem_profile":                None,
             "model_size":                 model_size,
+            "batch_size":                 batch_size,
+            "seq_len":                    seq_len,
             "status":                     "crash",
             "error":                      f"subprocess exited with code {proc.returncode}",
         }
@@ -80,7 +96,7 @@ def main():
     parser.add_argument("--output",         required=True)
     parser.add_argument("--dry_run",        action="store_true")
     parser.add_argument("--model_size",     choices=list(MODEL_CONFIGS), default=None,
-                        help="Run a single model size instead of all four")
+                        help="Run a single model size instead of all")
     parser.add_argument("--nproc_per_node", type=int, default=4)
     args = parser.parse_args()
 
@@ -88,11 +104,13 @@ def main():
     all_results = []
 
     for model_size in sizes:
+        batch_seq = [(1, 16)] if args.dry_run else BATCH_SEQ_CONFIGS[model_size]
         for stage in [0, 3]:
-            print(f"\n--- zero{stage} {model_size} ---", flush=True)
-            result = _run_config(stage, model_size, args.nproc_per_node, args.dry_run)
-            all_results.append(result)
-            print(result, flush=True)
+            for batch_size, seq_len in batch_seq:
+                print(f"\n--- zero{stage} {model_size} bs={batch_size} seq={seq_len} ---", flush=True)
+                result = _run_config(stage, model_size, batch_size, seq_len, args.nproc_per_node, args.dry_run)
+                all_results.append(result)
+                print(result, flush=True)
 
     save_results(args.output, all_results)
     print(f"\nResults saved to {args.output}")

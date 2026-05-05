@@ -23,16 +23,16 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
+    "10B":  dict(n_layer=32, n_head=40,  n_embd=5120),
 }
-
-BATCH_SIZE = 4
-SEQ_LEN    = 512
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage",      type=int, required=True, choices=[0, 3])
     parser.add_argument("--model_size", required=True, choices=list(MODEL_CONFIGS))
+    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--seq_len",    type=int, default=512)
     parser.add_argument("--output",     required=True)
     parser.add_argument("--dry_run",    action="store_true")
     args = parser.parse_args()
@@ -51,8 +51,8 @@ def main():
         seq_len    = 16
     else:
         model_cfg  = MODEL_CONFIGS[args.model_size]
-        batch_size = BATCH_SIZE
-        seq_len    = SEQ_LEN
+        batch_size = args.batch_size
+        seq_len    = args.seq_len
 
     result = run_zero(args.stage, model_cfg, batch_size, seq_len, local_rank)
     result.update({
