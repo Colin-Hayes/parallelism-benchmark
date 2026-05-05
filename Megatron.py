@@ -127,11 +127,8 @@ def _param_gb(model) -> float:
     return sum(p.numel() * p.element_size() / 1e9 for p in model.parameters() if p.is_cuda)
 
 
-def _profile_step(model, opt, forward_backward_func, forward_step,
-                  data_iter, local_rank, batch_size, seq_len, num_microbatches) -> dict:
-    m_base = _alloc_gb(local_rank)
-
-    opt.zero_grad(set_to_none=True)
+def _fwd_bwd(forward_backward_func, forward_step, data_iter, model,
+             num_microbatches, seq_len, batch_size):
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
         forward_backward_func(
             forward_step_func=forward_step,
@@ -142,6 +139,14 @@ def _profile_step(model, opt, forward_backward_func, forward_step,
             micro_batch_size=batch_size,
             forward_only=False,
         )
+
+
+def _profile_step(model, opt, forward_backward_func, forward_step,
+                  data_iter, local_rank, batch_size, seq_len, num_microbatches) -> dict:
+    m_base = _alloc_gb(local_rank)
+
+    opt.zero_grad(set_to_none=True)
+    _fwd_bwd(forward_backward_func, forward_step, data_iter, model, num_microbatches, seq_len, batch_size)
     m_fwdbwd = _alloc_gb(local_rank)
 
     opt.step()
@@ -172,16 +177,7 @@ def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches
 
     def _step():
         opt.zero_grad(set_to_none=True)
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            forward_backward_func(
-                forward_step_func=forward_step,
-                data_iterator=data_iter,
-                model=[model],
-                num_microbatches=num_microbatches,
-                seq_length=seq_len,
-                micro_batch_size=batch_size,
-                forward_only=False,
-            )
+        _fwd_bwd(forward_backward_func, forward_step, data_iter, model, num_microbatches, seq_len, batch_size)
         opt.step()
 
     for _ in range(WARMUP_STEPS):
