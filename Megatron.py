@@ -35,8 +35,8 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         num_attention_heads=model_cfg["n_head"],
         ffn_hidden_size=4 * model_cfg["n_embd"],
         use_cpu_initialization=True,
-        bf16=True,
-        params_dtype=torch.bfloat16,
+        bf16=False,
+        params_dtype=torch.float32,
         pipeline_dtype=torch.bfloat16,
         add_bias_linear=True,
         bias_activation_fusion=False,
@@ -59,7 +59,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         pre_process=mpu.is_pipeline_first_stage(),
         post_process=mpu.is_pipeline_last_stage(),
     )
-    return model.cuda().bfloat16()
+    return model.cuda()  # fp32 master weights; autocast handles bf16 compute
 
 
 class _DataIterator:
@@ -132,15 +132,16 @@ def _profile_step(model, opt, forward_backward_func, forward_step,
     m_base = _alloc_gb(local_rank)
 
     opt.zero_grad(set_to_none=True)
-    forward_backward_func(
-        forward_step_func=forward_step,
-        data_iterator=data_iter,
-        model=[model],
-        num_microbatches=num_microbatches,
-        seq_length=seq_len,
-        micro_batch_size=batch_size,
-        forward_only=False,
-    )
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        forward_backward_func(
+            forward_step_func=forward_step,
+            data_iterator=data_iter,
+            model=[model],
+            num_microbatches=num_microbatches,
+            seq_length=seq_len,
+            micro_batch_size=batch_size,
+            forward_only=False,
+        )
     m_fwdbwd = _alloc_gb(local_rank)
 
     opt.step()
@@ -171,15 +172,16 @@ def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches
 
     def _step():
         opt.zero_grad(set_to_none=True)
-        forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iter,
-            model=[model],
-            num_microbatches=num_microbatches,
-            seq_length=seq_len,
-            micro_batch_size=batch_size,
-            forward_only=False,
-        )
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            forward_backward_func(
+                forward_step_func=forward_step,
+                data_iterator=data_iter,
+                model=[model],
+                num_microbatches=num_microbatches,
+                seq_length=seq_len,
+                micro_batch_size=batch_size,
+                forward_only=False,
+            )
         opt.step()
 
     for _ in range(WARMUP_STEPS):
