@@ -23,7 +23,6 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
-    "10B":  dict(n_layer=32, n_head=40,  n_embd=5120),
 }
 
 

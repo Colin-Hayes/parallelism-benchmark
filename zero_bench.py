@@ -23,17 +23,13 @@ MODEL_CONFIGS = {
     "1.3B": dict(n_layer=24, n_head=16,  n_embd=2048),
     "2.7B": dict(n_layer=32, n_head=32,  n_embd=2560),
     "6.7B": dict(n_layer=32, n_head=32,  n_embd=4096),
-    "10B":  dict(n_layer=32, n_head=40,  n_embd=5120),
 }
 
-# (batch_size, seq_len) pairs to test per model size.
-# Larger models get fewer configs to avoid long runtimes from OOM retries.
 BATCH_SEQ_CONFIGS = {
     "125M": [(4, 512), (8, 512), (16, 512), (4, 1024), (8, 1024), (4, 2048)],
     "1.3B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
     "2.7B": [(4, 512), (8, 512), (4, 1024)],
     "6.7B": [(4, 512), (4, 1024)],
-    "10B":  [(4, 512)],
 }
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "zero_run_config.py")
