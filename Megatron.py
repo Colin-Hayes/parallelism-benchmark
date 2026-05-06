@@ -43,7 +43,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         masked_softmax_fusion=False,
         persist_layer_norm=False,
         gradient_accumulation_fusion=False,
-        recompute_granularity="full",
+        recompute_granularity="",
         recompute_method="uniform",
         recompute_num_layers=layers_per_stage,
     )
@@ -93,12 +93,13 @@ def _make_forward_step(seq_len: int):
             input_ids    = None
             position_ids = None
 
-        output = model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            attention_mask=None,
-            labels=labels,
-        )
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            output = model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                attention_mask=None,
+                labels=labels,
+            )
 
         def loss_func(output_tensor):
             loss = output_tensor.mean()
@@ -129,16 +130,15 @@ def _param_gb(model) -> float:
 
 def _fwd_bwd(forward_backward_func, forward_step, data_iter, model,
              num_microbatches, seq_len, batch_size):
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iter,
-            model=[model],
-            num_microbatches=num_microbatches,
-            seq_length=seq_len,
-            micro_batch_size=batch_size,
-            forward_only=False,
-        )
+    forward_backward_func(
+        forward_step_func=forward_step,
+        data_iterator=data_iter,
+        model=[model],
+        num_microbatches=num_microbatches,
+        seq_length=seq_len,
+        micro_batch_size=batch_size,
+        forward_only=False,
+    )
 
 
 def _profile_step(model, opt, forward_backward_func, forward_step,
