@@ -16,6 +16,7 @@ import json
 import os
 import random
 import subprocess
+import sys
 import tempfile
 
 MODEL_CONFIGS = {
@@ -26,6 +27,7 @@ MODEL_CONFIGS = {
 }
 
 BATCH_SEQ_CONFIGS = {
+    "125M": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
     "1.3B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
     "2.7B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
     "6.7B": [(4, 512), (8, 512), (4, 1024), (8, 1024)],
@@ -40,7 +42,7 @@ def _run_config(stage, model_size, batch_size, seq_len, nproc, dry_run):
         tmp = f.name
 
     cmd = [
-        "python", "-m", "torch.distributed.run",
+        sys.executable, "-m", "torch.distributed.run",
         f"--nproc_per_node={nproc}",
         f"--master_port={port}",
         SCRIPT,
@@ -53,13 +55,19 @@ def _run_config(stage, model_size, batch_size, seq_len, nproc, dry_run):
     if dry_run:
         cmd.append("--dry_run")
 
-    proc = subprocess.run(cmd, timeout=600)
+    try:
+        proc = subprocess.run(cmd, timeout=600)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        returncode = -1
 
-    if os.path.exists(tmp):
+    if os.path.exists(tmp) and os.path.getsize(tmp) > 0:
         with open(tmp) as f:
             result = json.load(f)
         os.unlink(tmp)
     else:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
         result = {
             "strategy":                   f"zero{stage}",
             "throughput_samples_per_sec": None,
@@ -69,7 +77,7 @@ def _run_config(stage, model_size, batch_size, seq_len, nproc, dry_run):
             "batch_size":                 batch_size,
             "seq_len":                    seq_len,
             "status":                     "crash",
-            "error":                      f"subprocess exited with code {proc.returncode}",
+            "error":                      f"subprocess exited with code {returncode}",
         }
 
     return result

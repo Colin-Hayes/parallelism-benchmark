@@ -83,7 +83,11 @@ def run_one_config(tp_size, pp_size, size_name, model_cfg,
     if dry_run:
         cmd.append("--dry_run")
 
-    proc = subprocess.run(cmd, timeout=900)
+    try:
+        proc = subprocess.run(cmd, timeout=900)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        returncode = -1
 
     if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
         with open(tmp_path) as f:
@@ -102,7 +106,7 @@ def run_one_config(tp_size, pp_size, size_name, model_cfg,
             "throughput_samples_per_sec": None,
             "peak_gpu_mem_gb":            None,
             "status":                     "crash",
-            "error":                      f"subprocess exited with code {proc.returncode}",
+            "error":                      f"subprocess exited with code {returncode}",
         }
     return result
 
