@@ -35,8 +35,8 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         num_attention_heads=model_cfg["n_head"],
         ffn_hidden_size=4 * model_cfg["n_embd"],
         use_cpu_initialization=True,
-        bf16=False,
-        params_dtype=torch.float32,
+        bf16=True,
+        params_dtype=torch.bfloat16,
         pipeline_dtype=torch.bfloat16,
         add_bias_linear=True,
         bias_activation_fusion=False,
@@ -59,7 +59,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         pre_process=mpu.is_pipeline_first_stage(),
         post_process=mpu.is_pipeline_last_stage(),
     )
-    return model.cuda()  # fp32 master weights; autocast handles bf16 compute
+    return model.cuda()
 
 
 class _DataIterator:
@@ -93,13 +93,12 @@ def _make_forward_step(seq_len: int):
             input_ids    = None
             position_ids = None
 
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            output = model(
-                input_ids=input_ids,
-                position_ids=position_ids,
-                attention_mask=None,
-                labels=labels,
-            )
+        output = model(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            attention_mask=None,
+            labels=labels,
+        )
 
         def loss_func(output_tensor):
             loss = output_tensor.mean()
