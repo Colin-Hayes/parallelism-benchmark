@@ -37,7 +37,7 @@ def main():
     dist.init_process_group(
         backend="nccl",
         device_id=torch.device(f"cuda:{local_rank}"),
-        timeout=timedelta(seconds=600),
+        timeout=timedelta(seconds=120),
     )
     dist.barrier()
     world_size = dist.get_world_size()
