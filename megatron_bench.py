@@ -84,7 +84,7 @@ def run_one_config(tp_size, pp_size, size_name, model_cfg,
         cmd.append("--dry_run")
 
     try:
-        proc = subprocess.run(cmd, timeout=300)
+        proc = subprocess.run(cmd, timeout=600)
         returncode = proc.returncode
     except subprocess.TimeoutExpired:
         returncode = -1
