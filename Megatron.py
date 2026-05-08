@@ -16,8 +16,6 @@ import megatron.core.parallel_state as mpu
 from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.models.gpt import GPTModel
-from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-from megatron.core.distributed import DistributedDataParallelConfig
 
 WARMUP_STEPS = 5
 BENCH_STEPS  = 20
@@ -37,6 +35,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         num_attention_heads=model_cfg["n_head"],
         ffn_hidden_size=4 * model_cfg["n_embd"],
         use_cpu_initialization=True,
+        fp16=False,
         bf16=True,
         params_dtype=torch.bfloat16,
         pipeline_dtype=torch.bfloat16,
@@ -62,21 +61,6 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         post_process=mpu.is_pipeline_last_stage(),
     )
     return model.cuda()
-
-
-def _make_optimizer(model):
-    # get_megatron_optimizer requires ddp_config on the model; with DP=1 we
-    # don't wrap in Megatron DDP but must set the attribute manually.
-    if not hasattr(model, "ddp_config"):
-        model.ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=False)
-    optim_config = OptimizerConfig(
-        optimizer="adam",
-        lr=1e-4,
-        bf16=True,
-        fp16=False,
-        use_distributed_optimizer=False,
-    )
-    return get_megatron_optimizer(optim_config, [model])
 
 
 class _DataIterator:
@@ -110,12 +94,13 @@ def _make_forward_step(seq_len: int):
             input_ids    = None
             position_ids = None
 
-        output = model(
-            input_ids=input_ids,
-            position_ids=position_ids,
-            attention_mask=None,
-            labels=labels,
-        )
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            output = model(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                attention_mask=None,
+                labels=labels,
+            )
 
         def loss_func(output_tensor):
             loss = output_tensor.mean()
@@ -131,17 +116,9 @@ def _alloc_gb(device) -> float:
     return torch.cuda.memory_allocated(device) / 1e9
 
 
-def _optimizer_state_gb(opt) -> float:
+def _optimizer_state_gb(opt: torch.optim.Optimizer) -> float:
     gb = 0.0
-    # fp32 master params (bf16 model → fp32 master copy in BF16Optimizer)
-    for attr in ("fp32_from_bf16_groups", "fp32_from_float16_groups"):
-        for group in getattr(opt, attr, []):
-            for p in group:
-                if isinstance(p, torch.Tensor) and p.is_cuda:
-                    gb += p.numel() * p.element_size() / 1e9
-    # fp32 Adam m and v states in the underlying optimizer
-    inner = getattr(opt, "optimizer", opt)
-    for state in inner.state.values():
+    for state in opt.state.values():
         for v in state.values():
             if isinstance(v, torch.Tensor) and v.is_cuda:
                 gb += v.numel() * v.element_size() / 1e9
@@ -196,7 +173,9 @@ def _profile_step(model, opt, forward_backward_func, forward_step,
 def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches, vocab_size):
     forward_backward_func = get_forward_backward_func()
     forward_step          = _make_forward_step(seq_len)
-    opt                   = _make_optimizer(model)
+    opt                   = torch.optim.AdamW(
+                              [p for p in model.parameters() if p.requires_grad], lr=1e-4
+                          )
     data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
     def _step():
