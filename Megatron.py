@@ -17,6 +17,7 @@ from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.distributed import DistributedDataParallelConfig
 
 WARMUP_STEPS = 5
 BENCH_STEPS  = 20
@@ -64,6 +65,10 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
 
 
 def _make_optimizer(model):
+    # get_megatron_optimizer requires ddp_config on the model; with DP=1 we
+    # don't wrap in Megatron DDP but must set the attribute manually.
+    if not hasattr(model, "ddp_config"):
+        model.ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=False)
     optim_config = OptimizerConfig(
         optimizer="adam",
         lr=1e-4,
