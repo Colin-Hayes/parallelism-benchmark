@@ -60,7 +60,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         pre_process=mpu.is_pipeline_first_stage(),
         post_process=mpu.is_pipeline_last_stage(),
     )
-    return model.cuda()
+    return model.cuda().bfloat16()
 
 
 class _DataIterator:
