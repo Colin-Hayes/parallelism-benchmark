@@ -43,7 +43,7 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         masked_softmax_fusion=False,
         persist_layer_norm=False,
         gradient_accumulation_fusion=False,
-        recompute_granularity="",
+        recompute_granularity="full",
         recompute_method="uniform",
         recompute_num_layers=layers_per_stage,
     )
