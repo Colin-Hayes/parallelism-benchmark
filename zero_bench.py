@@ -56,7 +56,7 @@ def _run_config(stage, model_size, batch_size, seq_len, nproc, dry_run):
         cmd.append("--dry_run")
 
     try:
-        proc = subprocess.run(cmd, timeout=600)
+        proc = subprocess.run(cmd, timeout=1800)
         returncode = proc.returncode
     except subprocess.TimeoutExpired:
         returncode = -1
