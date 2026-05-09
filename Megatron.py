@@ -44,6 +44,9 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
         masked_softmax_fusion=False,
         persist_layer_norm=False,
         gradient_accumulation_fusion=False,
+        recompute_granularity="full",
+        recompute_method="uniform",
+        recompute_num_layers=layers_per_stage,
     )
 
     tp = mpu.get_tensor_model_parallel_world_size()
