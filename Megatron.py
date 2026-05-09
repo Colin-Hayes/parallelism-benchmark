@@ -61,6 +61,49 @@ def _build_model(model_cfg: dict, seq_len: int) -> GPTModel:
     return model.cuda().bfloat16()
 
 
+class _MasterWeightOptimizer:
+    """bf16 compute with fp32 master weights and fp32 Adam states.
+
+    Memory model per param:
+      2 bytes  bf16 param  (compute)
+      4 bytes  fp32 master (updated by Adam)
+      4 bytes  fp32 Adam m
+      4 bytes  fp32 Adam v
+    = 14 bytes/param, matching canonical Megatron-LM / DeepSpeed bf16 training.
+    """
+
+    def __init__(self, model: torch.nn.Module, lr: float = 1e-4):
+        self._bf16 = [p for p in model.parameters() if p.requires_grad]
+        self._fp32 = [p.detach().float().clone().requires_grad_(True) for p in self._bf16]
+        self._opt  = torch.optim.AdamW(self._fp32, lr=lr)
+
+    def zero_grad(self) -> None:
+        for p in self._bf16:
+            p.grad = None
+        self._opt.zero_grad(set_to_none=True)
+
+    def step(self) -> None:
+        for p_bf16, p_fp32 in zip(self._bf16, self._fp32):
+            if p_bf16.grad is not None:
+                if p_fp32.grad is None:
+                    p_fp32.grad = torch.empty_like(p_fp32)
+                p_fp32.grad.copy_(p_bf16.grad)
+            else:
+                p_fp32.grad = None
+        self._opt.step()
+        with torch.no_grad():
+            for p_bf16, p_fp32 in zip(self._bf16, self._fp32):
+                p_bf16.data.copy_(p_fp32.data)
+
+    @property
+    def state(self):
+        return self._opt.state
+
+    @property
+    def fp32_params(self):
+        return self._fp32
+
+
 class _DataIterator:
     def __init__(self, batch_size: int, seq_len: int, local_rank: int, vocab_size: int):
         self.batch_size = batch_size
@@ -114,8 +157,11 @@ def _alloc_gb(device) -> float:
     return torch.cuda.memory_allocated(device) / 1e9
 
 
-def _optimizer_state_gb(opt: torch.optim.Optimizer) -> float:
+def _optimizer_state_gb(opt: _MasterWeightOptimizer) -> float:
     gb = 0.0
+    for p in opt.fp32_params:
+        if p.is_cuda:
+            gb += p.numel() * p.element_size() / 1e9
     for state in opt.state.values():
         for v in state.values():
             if isinstance(v, torch.Tensor) and v.is_cuda:
@@ -171,9 +217,7 @@ def _profile_step(model, opt, forward_backward_func, forward_step,
 def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches, vocab_size):
     forward_backward_func = get_forward_backward_func()
     forward_step          = _make_forward_step(seq_len)
-    opt                   = torch.optim.AdamW(
-                              [p for p in model.parameters() if p.requires_grad], lr=1e-4
-                          )
+    opt                   = _MasterWeightOptimizer(model)
     data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
     def _step():
