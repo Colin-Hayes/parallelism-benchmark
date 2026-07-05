@@ -325,6 +325,33 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
         }
 
     except torch.cuda.OutOfMemoryError as e:
+        # --- snapshot BEFORE any cleanup: comm buffers + context are still resident here ---
+        try:
+            torch.cuda.synchronize(local_rank)
+        except Exception:
+            pass
+        try:
+            free, total    = torch.cuda.mem_get_info(local_rank)
+            in_use_gb      = (total - free) / 1e9
+            reserved_gb    = torch.cuda.memory_reserved(local_rank) / 1e9
+            allocated_gb   = torch.cuda.memory_allocated(local_rank) / 1e9
+            non_pytorch_gb = in_use_gb - reserved_gb
+            floor          = context_floor_gb if context_floor_gb is not None else 0.0
+            oom_profile = {
+                "captured_at":        "oom",           # rank-local; process group may be dead
+                "oom_rank":           local_rank,
+                "device_capacity_gb": round(total / 1e9, 3),
+                "in_use_gb":          round(in_use_gb, 3),        # driver view: everything on the card
+                "torch_reserved_gb":  round(reserved_gb, 3),
+                "torch_allocated_gb": round(allocated_gb, 3),
+                "non_pytorch_gb":     round(non_pytorch_gb, 3),   # context + NCCL + cuBLAS
+                "cuda_context_gb":    round(floor, 3),
+                "comm_workspace_gb":  round(max(non_pytorch_gb - floor, 0.0), 3),  # NCCL + cuBLAS + misc
+            }
+        except Exception as snap_err:
+            oom_profile = {"captured_at": "oom", "snapshot_error": str(snap_err)}
+
+        # --- now the cleanup (unchanged) ---
         if model is not None:
             del model
         try:
@@ -335,6 +362,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
         torch.cuda.synchronize(local_rank)
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
+
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,
@@ -342,7 +370,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
             "num_microbatches":           num_microbatches,
             "throughput_samples_per_sec": None,
             "peak_gpu_mem_gb":            None,
-            "mem_profile":                None,
+            "mem_profile":                oom_profile,   # was None — now carries the OOM snapshot
             "status":                     "OOM",
             "error":                      str(e),
         }
