@@ -54,6 +54,7 @@ def main():
         seq_len=args.seq_len,
         local_rank=local_rank,
         num_microbatches=args.num_microbatches,
+        context_floor_gb=context_floor_gb
     )
     result.update({
         "model_size": args.model_size,

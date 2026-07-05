@@ -39,8 +39,13 @@ def _alloc_gb(device) -> float:
 
 
 def _optimizer_state_gb(engine) -> float:
-    gb = 0.0
     inner = getattr(engine.optimizer, "optimizer", engine.optimizer)
+    gb, seen = 0.0, set()
+    for group in inner.param_groups:
+        for p in group["params"]:
+            if isinstance(p, torch.Tensor) and p.is_cuda and id(p) not in seen:
+                seen.add(id(p))
+                gb += p.numel() * p.element_size() / 1e9
     for state in inner.state.values():
         for v in state.values():
             if isinstance(v, torch.Tensor) and v.is_cuda:
