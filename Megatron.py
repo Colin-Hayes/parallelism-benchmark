@@ -189,34 +189,45 @@ def _fwd_bwd(forward_backward_func, forward_step, data_iter, model,
 
 
 def _profile_step(model, opt, forward_backward_func, forward_step,
-                  data_iter, local_rank, batch_size, seq_len, num_microbatches) -> dict:
-    m_base = _alloc_gb(local_rank)
+                  data_iter, local_rank, batch_size, seq_len, num_microbatches,
+                  context_floor_gb=None) -> dict:
+    dev = local_rank
+    m_base   = _alloc_gb(dev)
+    param_gb = _param_gb(model)                 # bf16 param shard (TP-sharded)
+    opt_gb   = _optimizer_state_gb(opt)         # fp32 master + Adam (over the shard)
 
-    _fwd_bwd(forward_backward_func, forward_step, data_iter, model, num_microbatches, seq_len, batch_size)
-    m_fwdbwd = _alloc_gb(local_rank)
+    _fwd_bwd(forward_backward_func, forward_step, data_iter, model,
+             num_microbatches, seq_len, batch_size)
+    m_fwdbwd = _alloc_gb(dev)
 
-    opt.step()
-    m_step = _alloc_gb(local_rank)
-    # zero_grad called inside step(); m_step already reflects post-free state
+    torch.cuda.synchronize(dev)
+    free, total    = torch.cuda.mem_get_info(dev)
+    reserved_now   = torch.cuda.memory_reserved(dev) / 1e9
+    non_pytorch_gb = (total - free) / 1e9 - reserved_now
+    capacity_gb    = total / 1e9
 
-    free, total    = torch.cuda.mem_get_info(local_rank)
-    non_pytorch_gb = (total - free) / 1e9 - torch.cuda.memory_reserved(local_rank) / 1e9
-    reserved_gb    = torch.cuda.memory_reserved(local_rank) / 1e9
+    opt.step()                                   # zero_grad() called inside
+    m_step = _alloc_gb(dev)
 
-    return {
-        "baseline_gb":         round(m_base,             3),
-        "after_fwd_bwd_gb":    round(m_fwdbwd,           3),
-        "after_step_gb":       round(m_step,             3),
-        "delta_fwd_bwd_gb":    round(m_fwdbwd - m_base,  3),
-        "delta_step_gb":       round(m_step - m_fwdbwd,  3),
-        "reserved_gb":         round(reserved_gb,        3),
-        "non_pytorch_gb":      round(non_pytorch_gb,     3),
-        "param_shard_gb":      round(_param_gb(model),   3),
-        "optimizer_states_gb": round(_optimizer_state_gb(opt), 3),
+    prof = {
+        "baseline_gb":          round(m_base, 3),
+        "param_resident_gb":    round(param_gb, 3),   # renamed from param_shard_gb for cross-method parity
+        "optimizer_states_gb":  round(opt_gb, 3),
+        "baseline_other_gb":    round(max(m_base - param_gb - opt_gb, 0.0), 3),
+        "after_fwd_bwd_gb":     round(m_fwdbwd, 3),
+        "after_step_gb":        round(m_step, 3),
+        "delta_fwd_bwd_gb":     round(m_fwdbwd - m_base, 3),
+        "delta_step_gb":        round(m_step - m_fwdbwd, 3),
+        "non_pytorch_gb":       round(non_pytorch_gb, 3),
+        "device_capacity_gb":   round(capacity_gb, 3),
     }
+    if context_floor_gb is not None:
+        prof["cuda_context_gb"]   = round(context_floor_gb, 3)
+        prof["comm_workspace_gb"] = round(max(non_pytorch_gb - context_floor_gb, 0.0), 3)
+    return prof
 
 
-def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches, vocab_size):
+def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, context_floor_gb=None):
     forward_backward_func = get_forward_backward_func()
     forward_step          = _make_forward_step(seq_len)
     opt                   = _MasterWeightOptimizer(model)
@@ -232,7 +243,7 @@ def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches
     torch.cuda.synchronize(local_rank)
     mem_profile = _profile_step(
         model, opt, forward_backward_func, forward_step,
-        data_iter, local_rank, batch_size, seq_len, num_microbatches,
+        data_iter, local_rank, batch_size, seq_len, num_microbatches, context_floor_gb,
     )
     torch.cuda.reset_peak_memory_stats(local_rank)
 
@@ -242,18 +253,33 @@ def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches
         _step()
     torch.cuda.synchronize(local_rank)
     elapsed = time.perf_counter() - t0
-
     throughput = round((BENCH_STEPS * batch_size * num_microbatches) / elapsed, 2)
 
-    peak_this_rank = torch.cuda.max_memory_allocated(local_rank) / 1e9
-    peak_tensor    = torch.tensor(peak_this_rank, device=f"cuda:{local_rank}")
-    dist.all_reduce(peak_tensor, op=dist.ReduceOp.MAX)
-    peak_mem_gb    = round(peak_tensor.item(), 3)
+    peak_alloc = torch.cuda.max_memory_allocated(local_rank) / 1e9
+    peak_resv  = torch.cuda.max_memory_reserved(local_rank) / 1e9
+    np_gb      = mem_profile["non_pytorch_gb"]
+    floor_gb   = context_floor_gb if context_floor_gb is not None else 0.0
 
-    return throughput, peak_mem_gb, mem_profile
+    stats = torch.tensor([peak_alloc, peak_resv, np_gb, floor_gb],
+                         device=f"cuda:{local_rank}")
+    dist.all_reduce(stats, op=dist.ReduceOp.MAX)
+    peak_alloc, peak_resv, np_gb, floor_gb = [round(x, 3) for x in stats.tolist()]
+
+    mem_profile["peak_alloc_gb"]    = peak_alloc
+    mem_profile["peak_reserved_gb"] = peak_resv
+    mem_profile["non_pytorch_gb"]   = np_gb
+    if context_floor_gb is not None:
+        mem_profile["cuda_context_gb"]   = floor_gb
+        mem_profile["comm_workspace_gb"] = round(max(np_gb - floor_gb, 0.0), 3)
+
+    mem_profile["total_footprint_gb"]             = round(peak_resv + np_gb, 3)
+    mem_profile["total_alloc_plus_nonpytorch_gb"] = round(peak_alloc + np_gb, 3)
+    mem_profile["headroom_gb"] = round(mem_profile["device_capacity_gb"] - (peak_resv + np_gb), 3)
+
+    return throughput, peak_alloc, mem_profile
 
 
-def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, num_microbatches=4):
+def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, num_microbatches=4, context_floor_gb=None):
     strategy = f"megatron_tp{tp_size}_pp{pp_size}"
     model    = None
 
@@ -275,7 +301,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
         vocab_size = math.ceil(50257 / tp_size) * tp_size
 
         throughput, peak_mem, mem_profile = _benchmark_megatron(
-            model, local_rank, batch_size, seq_len, num_microbatches, vocab_size
+            model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, context_floor_gb
         )
 
         del model
@@ -292,6 +318,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
             "num_microbatches":           num_microbatches,
             "throughput_samples_per_sec": throughput,
             "peak_gpu_mem_gb":            peak_mem,
+            "total_footprint_gb": mem_profile["total_footprint_gb"],
             "mem_profile":                mem_profile,
             "status":                     "ok",
             "error":                      None,

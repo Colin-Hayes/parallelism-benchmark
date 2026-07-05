@@ -34,11 +34,13 @@ def main():
 
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(
-        backend="nccl",
-        device_id=torch.device(f"cuda:{local_rank}"),
-        timeout=timedelta(seconds=30),
-    )
+    _ = torch.empty(1, device=f"cuda:{local_rank}")
+    torch.cuda.synchronize(local_rank)
+    _free, _total = torch.cuda.mem_get_info(local_rank)
+    context_floor_gb = (_total - _free) / 1e9
+
+    dist.init_process_group(backend="nccl", device_id=torch.device(f"cuda:{local_rank}"),
+                            timeout=timedelta(seconds=30))
     dist.barrier()
     world_size = dist.get_world_size()
 

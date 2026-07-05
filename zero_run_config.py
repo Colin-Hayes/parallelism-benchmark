@@ -38,6 +38,10 @@ def main():
 
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
+    _ = torch.empty(1, device=f"cuda:{local_rank}")
+    torch.cuda.synchronize(local_rank)
+    _free, _total = torch.cuda.mem_get_info(local_rank)
+    context_floor_gb = (_total - _free) / 1e9
     dist.init_process_group(
         backend="nccl",
         device_id=torch.device(f"cuda:{local_rank}"),
@@ -53,7 +57,7 @@ def main():
         batch_size = args.batch_size
         seq_len    = args.seq_len
 
-    result = run_zero(args.stage, model_cfg, batch_size, seq_len, local_rank)
+    result = run_zero(args.stage, model_cfg, batch_size, seq_len, local_rank, context_floor_gb=context_floor_gb)
     result.update({
         "model_size": args.model_size,
         "num_gpus":   world_size,
