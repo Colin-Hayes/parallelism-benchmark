@@ -46,6 +46,20 @@ PARALLEL_CONFIGS = [
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 RUN_SCRIPT = os.path.join(SCRIPT_DIR, "megatron_run_config.py")
 
+def _resolve_batch_config(pp_size, batch_size, num_microbatches):
+    """PP>1 needs multiple microbatches in flight to fill the 1F1B pipeline
+    bubble across stages, so it keeps the nominal microbatch split. PP=1 has
+    no pipeline stages to fill — there's no scheduling reason to chunk the
+    batch — so collapse everything into a single microbatch. Same effective
+    global batch either way (batch_size * num_microbatches is unchanged),
+    but PP=1 with num_microbatches=1 additionally unlocks Megatron.py's
+    immediate-update optimizer mode, since each parameter's gradient is
+    then final the instant autograd produces it instead of needing to
+    survive several sequential microbatch backward passes."""
+    if pp_size == 1:
+        return batch_size * num_microbatches, 1
+    return batch_size, num_microbatches
+
 
 def save_results(path, records):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -139,12 +153,16 @@ def main():
         bs_configs = batch_seq if args.dry_run else BATCH_SEQ_CONFIGS[size_name]
         for tp_size, pp_size in valid_parallel:
             for batch_size, seq_len in bs_configs:
+                cli_batch_size, cli_num_microbatches = _resolve_batch_config(
+                    pp_size, batch_size, NUM_MICROBATCHES
+                )
                 port = random.randint(20000, 40000)
                 print(f"\n=== {size_name} TP={tp_size} PP={pp_size} "
-                      f"bs={batch_size} seq={seq_len} (port {port}) ===", flush=True)
+                      f"bs={cli_batch_size} microbatches={cli_num_microbatches} "
+                      f"seq={seq_len} (port {port}) ===", flush=True)
                 result = run_one_config(
                     tp_size, pp_size, size_name, model_cfg,
-                    batch_size, seq_len, NUM_MICROBATCHES,
+                    cli_batch_size, seq_len, cli_num_microbatches,
                     world_size, port, args.dry_run,
                 )
                 print(result, flush=True)

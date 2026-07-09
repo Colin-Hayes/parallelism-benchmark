@@ -67,17 +67,27 @@ class _MasterWeightOptimizer:
     """bf16 compute, fp32 master + fp32 Adam, grads accumulated directly into
     persistent fp32 main_grad buffers (no bf16 grad copy kept). Requires torch>=2.1."""
 
-    def __init__(self, model: torch.nn.Module, lr: float = 1e-4):
+    def __init__(self, model: torch.nn.Module, lr: float = 1e-4, immediate: bool = False):
+        self._immediate = immediate
         self._bf16 = [p for p in model.parameters() if p.requires_grad]
         self._fp32 = [p.detach().float().clone() for p in self._bf16]
         for pf in self._fp32:
             pf.requires_grad_(True)
-            pf.grad = torch.zeros_like(pf)          # persistent fp32 main_grad
-        self._opt = torch.optim.AdamW(self._fp32, lr=lr)
-        self._handles = [
-            pb.register_post_accumulate_grad_hook(self._make_hook(pf))
-            for pb, pf in zip(self._bf16, self._fp32)
-        ]
+        
+        if immediate:
+            self._opts = [torch.optim.AdamW([pf], lr=lr) for pf in self._fp32]
+            self._handles = [
+                pb.register_post_accumulate_grad_hook(self._make_immediate_hook(i))
+                for i, pb in enumerate(self._bf16)
+            ]
+        else:
+            for pf in self._fp32:
+                pf.grad = torch.zeros_like(pf)        
+            self._opt = torch.optim.AdamW(self._fp32, lr=lr)
+            self._handles = [
+                pb.register_post_accumulate_grad_hook(self._make_hook(pf))
+                for pb, pf in zip(self._bf16, self._fp32)
+            ]
 
     @staticmethod
     def _make_hook(pf):
@@ -85,8 +95,21 @@ class _MasterWeightOptimizer:
             pf.grad.add_(pb.grad.float())   # fold into fp32 main_grad
             pb.grad = None                  # free bf16 grad right away
         return hook
+    
+    def _make_immediate_hook(self, idx):
+        def hook(pb):
+            pf = self._fp32[idx]
+            pf.grad = pb.grad.float()       # transient fp32 grad, this parameter only
+            pb.grad = None                  # free bf16 grad right away
+            self._opts[idx].step()          # applies the AdamW update to pf in place
+            pf.grad = None                  # drop the transient fp32 grad — nothing more needs it
+            with torch.no_grad():
+                pb.data.copy_(pf.data)      # bf16 weight <- updated fp32 master, right away
+        return hook
 
     def zero_grad(self) -> None:
+        if self._immediate:
+            return   # each hook already frees its own grad the moment it's consumed
         for pb in self._bf16:
             pb.grad = None
         for pf in self._fp32:
@@ -94,6 +117,8 @@ class _MasterWeightOptimizer:
                 pf.grad.zero_()             # keep buffer, reset values
 
     def step(self) -> None:
+        if self._immediate:
+            return   # every parameter was already updated by its hook during backward
         self._opt.step()
         with torch.no_grad():
             for p_bf16, p_fp32 in zip(self._bf16, self._fp32):
@@ -101,7 +126,14 @@ class _MasterWeightOptimizer:
         self.zero_grad()
 
     @property
-    def state(self): return self._opt.state
+    def state(self):
+        if self._immediate:
+            merged = {}
+            for opt in self._opts:
+                merged.update(opt.state)
+            return merged
+        return self._opt.state
+
     @property
     def fp32_params(self): return self._fp32
 
@@ -230,7 +262,7 @@ def _profile_step(model, opt, forward_backward_func, forward_step,
 def _benchmark_megatron(model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, context_floor_gb=None):
     forward_backward_func = get_forward_backward_func()
     forward_step          = _make_forward_step(seq_len)
-    opt                   = _MasterWeightOptimizer(model)
+    opt                   = _MasterWeightOptimizer(model, immediate=(num_microbatches == 1))
     data_iter             = iter(_DataIterator(batch_size, seq_len, local_rank, vocab_size))
 
     def _step():
@@ -299,6 +331,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
 
         model      = _build_model(model_cfg, seq_len)
         vocab_size = math.ceil(50257 / tp_size) * tp_size
+        dp_size    = mpu.get_data_parallel_world_size()
 
         throughput, peak_mem, mem_profile = _benchmark_megatron(
             model, local_rank, batch_size, seq_len, num_microbatches, vocab_size, context_floor_gb
@@ -316,6 +349,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
             "tp_size":                    tp_size,
             "pp_size":                    pp_size,
             "num_microbatches":           num_microbatches,
+            "effective_global_batch":     batch_size * num_microbatches * dp_size,
             "throughput_samples_per_sec": throughput,
             "peak_gpu_mem_gb":            peak_mem,
             "total_footprint_gb": mem_profile["total_footprint_gb"],
@@ -351,17 +385,7 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
         except Exception as snap_err:
             oom_profile = {"captured_at": "oom", "snapshot_error": str(snap_err)}
 
-        # --- now the cleanup (unchanged) ---
-        if model is not None:
-            del model
-        try:
-            mpu.destroy_model_parallel()
-        except Exception:
-            pass
-        gc.collect()
-        torch.cuda.synchronize(local_rank)
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+       
 
         return {
             "strategy":                   strategy,
@@ -376,16 +400,6 @@ def run_megatron(tp_size, pp_size, model_cfg, batch_size, seq_len, local_rank, n
         }
 
     except Exception as e:
-        if model is not None:
-            del model
-        try:
-            mpu.destroy_model_parallel()
-        except Exception:
-            pass
-        gc.collect()
-        torch.cuda.synchronize(local_rank)
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
         return {
             "strategy":                   strategy,
             "tp_size":                    tp_size,

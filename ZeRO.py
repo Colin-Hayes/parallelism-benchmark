@@ -169,6 +169,7 @@ def run_zero(
     batch_size: int,
     seq_len:    int,
     local_rank: int,
+    context_floor_gb: float = None,
 ) -> dict:
     strategy = f"zero{stage}"
 

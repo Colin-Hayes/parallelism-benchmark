@@ -16,6 +16,13 @@ import torch.distributed as dist
 
 from Megatron import run_megatron
 
+def _write_result(path, result):
+    # Atomic write: safe even if multiple ranks race to report the same failure.
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(result, f, indent=2)
+    os.replace(tmp, path)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -39,8 +46,7 @@ def main():
     _free, _total = torch.cuda.mem_get_info(local_rank)
     context_floor_gb = (_total - _free) / 1e9
 
-    dist.init_process_group(backend="nccl", device_id=torch.device(f"cuda:{local_rank}"),
-                            timeout=timedelta(seconds=30))
+    dist.init_process_group(backend="nccl", device_id=torch.device(f"cuda:{local_rank}"))
     dist.barrier()
     world_size = dist.get_world_size()
 
@@ -63,11 +69,15 @@ def main():
         "seq_len":    args.seq_len,
         "gpu":        torch.cuda.get_device_name(local_rank),
     })
+    if result["status"] != "ok":
+        print(result, flush=True)
+        _write_result(args.output, result)
+        os._exit(1)
+
 
     if local_rank == 0:
         print(result, flush=True)
-        with open(args.output, "w") as f:
-            json.dump(result, f, indent=2)
+        _write_result(args.output, result)
 
     dist.destroy_process_group()
 
